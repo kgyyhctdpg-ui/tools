@@ -1,29 +1,29 @@
+// Package document provides a small document model used by the Markdown renderer.
 package document
 
 import (
-	"bytes"
-	"encoding/xml"
-	"fmt"
 	"math"
 	"strings"
 
 	docxgo "github.com/mmonterroca/docxgo/v2"
 	"github.com/mmonterroca/docxgo/v2/domain"
 	compatcolor "github.com/scoming-dev/tools/docx/color"
-	"github.com/scoming-dev/tools/docx/measurement"
 	"github.com/scoming-dev/tools/docx/media"
 	"github.com/scoming-dev/tools/docx/schema/soo/wml"
 )
 
+// Field identifies a supported dynamic DOCX field.
 type Field int
 
 const (
+	// FieldCurrentPage renders the current page number.
 	FieldCurrentPage Field = iota
+	// FieldNumberOfPages renders the total page count.
 	FieldNumberOfPages
 )
 
+// Document stores the paragraphs, tables, sections, numbering, and media before saving.
 type Document struct {
-	Styles    *Styles
 	Numbering *Numbering
 
 	blocks        []*blockModel
@@ -31,6 +31,8 @@ type Document struct {
 	defaultHeader *headerFooterModel
 	defaultFooter *headerFooterModel
 	lastLandscape bool
+	svgImages     []*ImageRef
+	nextSVGID     int
 }
 
 type blockModel struct {
@@ -42,6 +44,7 @@ type blockModel struct {
 type paragraphModel struct {
 	runs         []*runModel
 	props        paragraphPropsModel
+	style        string
 	numbering    *Definition
 	bookmarkID   string
 	bookmarkName string
@@ -79,6 +82,7 @@ type runContentModel struct {
 	text      string
 	breakType domain.BreakType
 	field     Field
+	rawXML    string
 }
 
 type runContentType int
@@ -87,6 +91,7 @@ const (
 	runContentText runContentType = iota
 	runContentBreak
 	runContentField
+	runContentRawXML
 )
 
 type runPropsModel struct {
@@ -100,7 +105,7 @@ type runPropsModel struct {
 	strike    bool
 	color     compatcolor.Color
 	hasColor  bool
-	charSpace measurement.Distance
+	charSpace float64
 }
 
 type tableModel struct {
@@ -138,7 +143,7 @@ type cellPropsModel struct {
 type borderModel struct {
 	enabled bool
 	color   compatcolor.Color
-	width   measurement.Distance
+	width   float64
 }
 
 type headerFooterModel struct {
@@ -152,16 +157,15 @@ type sectionModel struct {
 	footer      *headerFooterModel
 }
 
-type DocumentXML struct{}
-
+// New creates an empty document model.
 func New() *Document {
 	numbering := &Numbering{}
 	return &Document{
-		Styles:    &Styles{},
 		Numbering: numbering,
 	}
 }
 
+// AddParagraph appends a paragraph to the document body.
 func (d *Document) AddParagraph() Paragraph {
 	model := newParagraphModel()
 	d.paragraphs = append(d.paragraphs, model)
@@ -169,28 +173,33 @@ func (d *Document) AddParagraph() Paragraph {
 	return Paragraph{model: model}
 }
 
+// AddTable appends a table to the document body.
 func (d *Document) AddTable() Table {
 	model := &tableModel{}
 	d.blocks = append(d.blocks, &blockModel{table: model})
 	return Table{model: model}
 }
 
+// AddHeader creates the default document header.
 func (d *Document) AddHeader() Header {
 	model := &headerFooterModel{}
 	d.defaultHeader = model
 	return Header{model: model}
 }
 
+// AddFooter creates the default document footer.
 func (d *Document) AddFooter() Footer {
 	model := &headerFooterModel{}
 	d.defaultFooter = model
 	return Footer{model: model}
 }
 
+// AddImage registers an image so it can be inserted by a run.
 func (d *Document) AddImage(img media.Image) (*ImageRef, error) {
-	return &ImageRef{image: img}, nil
+	return d.newImageRef(img), nil
 }
 
+// SaveToFile renders the document model to a DOCX file.
 func (d *Document) SaveToFile(path string) error {
 	out := docxgo.NewDocument()
 	if err := d.configureNumbering(out); err != nil {
@@ -233,7 +242,10 @@ func (d *Document) SaveToFile(path string) error {
 		_ = run.SetText("")
 	}
 
-	return out.SaveAs(path)
+	if err := out.SaveAs(path); err != nil {
+		return err
+	}
+	return d.replaceRawXMLPlaceholders(path)
 }
 
 func (d *Document) configureNumbering(out domain.Document) error {
@@ -286,10 +298,12 @@ func renderSectionHeaderFooter(section domain.Section, header, footer *headerFoo
 	return nil
 }
 
+// BodySection returns a handle for configuring the document body section.
 func (d *Document) BodySection() Section {
 	return Section{doc: d, model: &sectionModel{}}
 }
 
+// Paragraphs returns the body paragraphs in insertion order.
 func (d *Document) Paragraphs() []Paragraph {
 	ret := make([]Paragraph, 0, len(d.paragraphs))
 	for _, para := range d.paragraphs {
@@ -298,6 +312,7 @@ func (d *Document) Paragraphs() []Paragraph {
 	return ret
 }
 
+// RemoveParagraph removes a paragraph from the document body.
 func (d *Document) RemoveParagraph(para Paragraph) {
 	if para.model == nil {
 		return
@@ -316,10 +331,7 @@ func (d *Document) RemoveParagraph(para Paragraph) {
 	}
 }
 
-func (d *Document) X() *DocumentXML {
-	return &DocumentXML{}
-}
-
+// AddSectionBreak appends a section break with the requested orientation and page size.
 func (d *Document) AddSectionBreak(orientation domain.Orientation, pageSize domain.PageSize) Section {
 	model := &sectionModel{orientation: orientation, pageSize: pageSize, header: d.defaultHeader, footer: d.defaultFooter}
 	d.lastLandscape = orientation == domain.OrientationLandscape
@@ -327,6 +339,7 @@ func (d *Document) AddSectionBreak(orientation domain.Orientation, pageSize doma
 	return Section{doc: d, model: model}
 }
 
+// IsLastSectionLandscape reports whether the last added section break was landscape.
 func (d *Document) IsLastSectionLandscape() bool {
 	return d.lastLandscape
 }
@@ -339,10 +352,12 @@ func newParagraphModel() *paragraphModel {
 	}
 }
 
+// Paragraph represents one body, header, footer, or table-cell paragraph.
 type Paragraph struct {
 	model *paragraphModel
 }
 
+// AddRun appends a text run to the paragraph.
 func (p Paragraph) AddRun() Run {
 	if p.model == nil {
 		return Run{}
@@ -352,14 +367,25 @@ func (p Paragraph) AddRun() Run {
 	return Run{model: model}
 }
 
+// Properties returns mutable paragraph properties.
 func (p Paragraph) Properties() ParagraphProperties {
 	return ParagraphProperties{model: p.model}
 }
 
+// SetStyle applies a built-in or custom paragraph style ID.
+func (p Paragraph) SetStyle(style string) {
+	if p.model == nil {
+		return
+	}
+	p.model.style = style
+}
+
+// AddHyperLink appends a hyperlink container to the paragraph.
 func (p Paragraph) AddHyperLink() HyperLink {
 	return HyperLink{para: p.model, model: &hyperlinkModel{}}
 }
 
+// AddBookmark attaches a bookmark to the paragraph.
 func (p Paragraph) AddBookmark(id string) {
 	if p.model == nil {
 		return
@@ -368,6 +394,7 @@ func (p Paragraph) AddBookmark(id string) {
 	p.model.bookmarkName = id
 }
 
+// SetNumberingDefinition applies a DOCX numbering definition to the paragraph.
 func (p Paragraph) SetNumberingDefinition(def Definition) {
 	if p.model == nil {
 		return
@@ -375,14 +402,12 @@ func (p Paragraph) SetNumberingDefinition(def Definition) {
 	p.model.numbering = &def
 }
 
-func (p Paragraph) X() *wml.CT_P {
-	return &wml.CT_P{}
-}
-
+// ParagraphProperties provides paragraph-level styling operations.
 type ParagraphProperties struct {
 	model *paragraphModel
 }
 
+// SetAlignment sets paragraph alignment.
 func (p ParagraphProperties) SetAlignment(align wml.ST_Jc) {
 	if p.model == nil {
 		return
@@ -391,24 +416,28 @@ func (p ParagraphProperties) SetAlignment(align wml.ST_Jc) {
 	p.model.props.hasAlignment = true
 }
 
-func (p ParagraphProperties) SetFirstLineIndent(indent measurement.Distance) {
+// SetFirstLineIndent sets the first-line indent.
+func (p ParagraphProperties) SetFirstLineIndent(indent float64) {
 	if p.model == nil {
 		return
 	}
 	p.model.props.firstLineIndent = pointsToTwips(indent)
 }
 
-func (p ParagraphProperties) SetStartIndent(indent measurement.Distance) {
+// SetStartIndent sets the paragraph start indent.
+func (p ParagraphProperties) SetStartIndent(indent float64) {
 	if p.model == nil {
 		return
 	}
 	p.model.props.startIndent = pointsToTwips(indent)
 }
 
+// Spacing returns mutable paragraph spacing properties.
 func (p ParagraphProperties) Spacing() Spacing {
 	return Spacing{model: p.model}
 }
 
+// X exposes low-level paragraph properties for compatibility gaps.
 func (p ParagraphProperties) X() *wml.CT_PPr {
 	if p.model == nil {
 		return &wml.CT_PPr{}
@@ -419,18 +448,21 @@ func (p ParagraphProperties) X() *wml.CT_PPr {
 	return p.model.props.x
 }
 
-func (p ParagraphProperties) AddSection(mark wml.ST_SectionMark) Section {
+// AddSection attaches a section property object to the paragraph.
+func (p ParagraphProperties) AddSection(_ wml.ST_SectionMark) Section {
 	sectPr := wml.NewCT_SectPr()
 	sectPr.EG_HdrFtrReferences = []*wml.EG_HdrFtrReferences{}
 	p.X().SectPr = sectPr
 	return Section{model: &sectionModel{}}
 }
 
+// Spacing provides paragraph spacing operations.
 type Spacing struct {
 	model *paragraphModel
 }
 
-func (s Spacing) SetBefore(value measurement.Distance) {
+// SetBefore sets paragraph spacing before.
+func (s Spacing) SetBefore(value float64) {
 	if s.model == nil {
 		return
 	}
@@ -438,7 +470,8 @@ func (s Spacing) SetBefore(value measurement.Distance) {
 	s.model.props.spacing.hasBefore = true
 }
 
-func (s Spacing) SetAfter(value measurement.Distance) {
+// SetAfter sets paragraph spacing after.
+func (s Spacing) SetAfter(value float64) {
 	if s.model == nil {
 		return
 	}
@@ -446,7 +479,8 @@ func (s Spacing) SetAfter(value measurement.Distance) {
 	s.model.props.spacing.hasAfter = true
 }
 
-func (s Spacing) SetLineSpacing(value measurement.Distance, rule wml.ST_LineSpacingRule) {
+// SetLineSpacing sets paragraph line spacing.
+func (s Spacing) SetLineSpacing(value float64, rule wml.ST_LineSpacingRule) {
 	if s.model == nil {
 		return
 	}
@@ -455,10 +489,12 @@ func (s Spacing) SetLineSpacing(value measurement.Distance, rule wml.ST_LineSpac
 	s.model.props.spacing.hasLine = true
 }
 
+// Run represents a sequence of text, field, break, image, or raw XML content with shared styling.
 type Run struct {
 	model *runModel
 }
 
+// AddText appends text to the run.
 func (r Run) AddText(text string) {
 	if r.model == nil {
 		return
@@ -475,6 +511,7 @@ func (r Run) AddText(text string) {
 	r.model.contents = append(r.model.contents, runContentModel{typ: runContentText, text: text})
 }
 
+// AddBreak appends a line break to the run.
 func (r Run) AddBreak() {
 	if r.model == nil {
 		return
@@ -482,6 +519,7 @@ func (r Run) AddBreak() {
 	r.model.contents = append(r.model.contents, runContentModel{typ: runContentBreak, breakType: domain.BreakTypeLine})
 }
 
+// AddPageBreak appends a page break to the run.
 func (r Run) AddPageBreak() {
 	if r.model == nil {
 		return
@@ -489,10 +527,12 @@ func (r Run) AddPageBreak() {
 	r.model.contents = append(r.model.contents, runContentModel{typ: runContentBreak, breakType: domain.BreakTypePage})
 }
 
+// AddTab appends a tab character to the run.
 func (r Run) AddTab() {
 	r.AddText("\t")
 }
 
+// AddField appends a dynamic DOCX field to the run.
 func (r Run) AddField(field Field) {
 	if r.model == nil {
 		return
@@ -500,6 +540,15 @@ func (r Run) AddField(field Field) {
 	r.model.contents = append(r.model.contents, runContentModel{typ: runContentField, field: field})
 }
 
+// AddRawXML appends trusted WordprocessingML or OMML that should be written as XML, not escaped text.
+func (r Run) AddRawXML(rawXML string) {
+	if r.model == nil || strings.TrimSpace(rawXML) == "" {
+		return
+	}
+	r.model.contents = append(r.model.contents, runContentModel{typ: runContentRawXML, rawXML: rawXML})
+}
+
+// AddDrawingInline appends an inline image drawing to the run.
 func (r Run) AddDrawingInline(ref *ImageRef) (*DrawingInline, error) {
 	if r.model == nil {
 		return &DrawingInline{}, nil
@@ -508,6 +557,7 @@ func (r Run) AddDrawingInline(ref *ImageRef) (*DrawingInline, error) {
 	return &DrawingInline{ref: ref}, nil
 }
 
+// Properties returns mutable run properties.
 func (r Run) Properties() RunProperties {
 	if r.model == nil {
 		return RunProperties{}
@@ -515,34 +565,40 @@ func (r Run) Properties() RunProperties {
 	return RunProperties{props: &r.model.props}
 }
 
+// RunProperties provides run-level styling operations.
 type RunProperties struct {
 	props *runPropsModel
 }
 
+// SetStyle sets the run style name.
 func (p RunProperties) SetStyle(style string) {
 	if p.props != nil {
 		p.props.style = style
 	}
 }
 
+// SetBold toggles bold text.
 func (p RunProperties) SetBold(bold bool) {
 	if p.props != nil {
 		p.props.bold = bold
 	}
 }
 
+// SetItalic toggles italic text.
 func (p RunProperties) SetItalic(italic bool) {
 	if p.props != nil {
 		p.props.italic = italic
 	}
 }
 
+// SetStrikeThrough toggles strikethrough text.
 func (p RunProperties) SetStrikeThrough(strike bool) {
 	if p.props != nil {
 		p.props.strike = strike
 	}
 }
 
+// SetFontFamily sets the run font family.
 func (p RunProperties) SetFontFamily(name string) {
 	if p.props == nil {
 		return
@@ -551,7 +607,8 @@ func (p RunProperties) SetFontFamily(name string) {
 	p.props.font.EastAsia = name
 }
 
-func (p RunProperties) SetSize(size measurement.Distance) {
+// SetSize sets the run font size in points.
+func (p RunProperties) SetSize(size float64) {
 	if p.props == nil {
 		return
 	}
@@ -559,12 +616,14 @@ func (p RunProperties) SetSize(size measurement.Distance) {
 	p.props.hasSize = true
 }
 
-func (p RunProperties) SetCharacterSpacing(value measurement.Distance) {
+// SetCharacterSpacing sets run character spacing.
+func (p RunProperties) SetCharacterSpacing(value float64) {
 	if p.props != nil {
 		p.props.charSpace = value
 	}
 }
 
+// SetColor sets the run text color.
 func (p RunProperties) SetColor(color compatcolor.Color) {
 	if p.props == nil {
 		return
@@ -573,14 +632,17 @@ func (p RunProperties) SetColor(color compatcolor.Color) {
 	p.props.hasColor = true
 }
 
+// Fonts returns low-level run font attributes.
 func (p RunProperties) Fonts() Fonts {
 	return Fonts{props: p.props}
 }
 
+// Fonts exposes low-level font attributes used by DOCX compatibility code.
 type Fonts struct {
 	props *runPropsModel
 }
 
+// X returns mutable low-level font XML attributes.
 func (f Fonts) X() *FontX {
 	if f.props == nil {
 		return &FontX{}
@@ -588,6 +650,7 @@ func (f Fonts) X() *FontX {
 	return &f.props.fontX
 }
 
+// FontX contains low-level WordprocessingML font attributes.
 type FontX struct {
 	AsciiAttr    *string
 	HAnsiAttr    *string
@@ -595,6 +658,7 @@ type FontX struct {
 	CsAttr       *string
 }
 
+// HyperLink represents a paragraph hyperlink.
 type HyperLink struct {
 	para  *paragraphModel
 	model *hyperlinkModel
@@ -605,16 +669,19 @@ type hyperlinkModel struct {
 	x      HyperLinkXML
 }
 
+// HyperLinkXML exposes low-level hyperlink XML attributes.
 type HyperLinkXML struct {
 	AnchorAttr *string
 }
 
+// SetTarget sets the external hyperlink target.
 func (h HyperLink) SetTarget(target string) {
 	if h.model != nil {
 		h.model.target = target
 	}
 }
 
+// AddRun appends a run inside the hyperlink.
 func (h HyperLink) AddRun() Run {
 	if h.para == nil {
 		return Run{}
@@ -624,6 +691,7 @@ func (h HyperLink) AddRun() Run {
 	return Run{model: model}
 }
 
+// X exposes low-level hyperlink properties for internal anchors.
 func (h HyperLink) X() *HyperLinkXML {
 	if h.model == nil {
 		return &HyperLinkXML{}
@@ -631,10 +699,12 @@ func (h HyperLink) X() *HyperLinkXML {
 	return &h.model.x
 }
 
+// Table represents a DOCX table.
 type Table struct {
 	model *tableModel
 }
 
+// AddRow appends a row to the table.
 func (t Table) AddRow() Row {
 	if t.model == nil {
 		return Row{}
@@ -644,14 +714,17 @@ func (t Table) AddRow() Row {
 	return Row{model: model}
 }
 
+// Properties returns mutable table properties.
 func (t Table) Properties() TableProperties {
 	return TableProperties{model: t.model}
 }
 
+// Row represents a DOCX table row.
 type Row struct {
 	model *rowModel
 }
 
+// AddCell appends a cell to the row.
 func (r Row) AddCell() Cell {
 	if r.model == nil {
 		return Cell{}
@@ -663,10 +736,12 @@ func (r Row) AddCell() Cell {
 	return Cell{model: model}
 }
 
+// Cell represents a DOCX table cell.
 type Cell struct {
 	model *cellModel
 }
 
+// AddParagraph appends a paragraph to the cell.
 func (c Cell) AddParagraph() Paragraph {
 	if c.model == nil {
 		return Paragraph{}
@@ -676,20 +751,24 @@ func (c Cell) AddParagraph() Paragraph {
 	return Paragraph{model: model}
 }
 
+// Properties returns mutable cell properties.
 func (c Cell) Properties() CellProperties {
 	return CellProperties{model: c.model}
 }
 
+// TableProperties provides table-level styling operations.
 type TableProperties struct {
 	model *tableModel
 }
 
+// SetWidthPercent sets table width as a percentage.
 func (p TableProperties) SetWidthPercent(percent float64) {
 	if p.model != nil {
 		p.model.props.widthPercent = percent
 	}
 }
 
+// SetAlignment sets table alignment.
 func (p TableProperties) SetAlignment(align wml.ST_Jc) {
 	if p.model == nil {
 		return
@@ -698,6 +777,7 @@ func (p TableProperties) SetAlignment(align wml.ST_Jc) {
 	p.model.props.hasAlignment = true
 }
 
+// Borders returns mutable table borders.
 func (p TableProperties) Borders() Borders {
 	if p.model == nil {
 		return Borders{}
@@ -705,10 +785,12 @@ func (p TableProperties) Borders() Borders {
 	return Borders{border: &p.model.props.borders}
 }
 
+// CellProperties provides cell-level styling operations.
 type CellProperties struct {
 	model *cellModel
 }
 
+// SetVerticalAlignment sets vertical cell alignment.
 func (p CellProperties) SetVerticalAlignment(align wml.ST_VerticalJc) {
 	if p.model == nil {
 		return
@@ -717,18 +799,21 @@ func (p CellProperties) SetVerticalAlignment(align wml.ST_VerticalJc) {
 	p.model.props.hasVAlign = true
 }
 
+// SetVerticalMerge sets the vertical merge mode.
 func (p CellProperties) SetVerticalMerge(merge wml.ST_Merge) {
 	if p.model != nil {
 		p.model.props.verticalMerge = merge
 	}
 }
 
+// SetColumnSpan sets the horizontal column span.
 func (p CellProperties) SetColumnSpan(span int) {
 	if p.model != nil && span > 0 {
 		p.model.props.columnSpan = span
 	}
 }
 
+// SetShading sets the cell background color.
 func (p CellProperties) SetShading(_ wml.ST_Shd, fill compatcolor.Color, _ compatcolor.Color) {
 	if p.model == nil {
 		return
@@ -737,6 +822,7 @@ func (p CellProperties) SetShading(_ wml.ST_Shd, fill compatcolor.Color, _ compa
 	p.model.props.hasShading = true
 }
 
+// Borders returns mutable cell borders.
 func (p CellProperties) Borders() Borders {
 	if p.model == nil {
 		return Borders{}
@@ -744,6 +830,7 @@ func (p CellProperties) Borders() Borders {
 	return Borders{border: &p.model.props.borders}
 }
 
+// X exposes low-level cell properties for compatibility gaps.
 func (p CellProperties) X() *wml.CT_TcPr {
 	if p.model == nil {
 		return &wml.CT_TcPr{}
@@ -754,11 +841,13 @@ func (p CellProperties) X() *wml.CT_TcPr {
 	return p.model.props.x
 }
 
+// Borders configures table or cell borders.
 type Borders struct {
 	border *borderModel
 }
 
-func (b Borders) SetAll(_ wml.ST_Border, color compatcolor.Color, width measurement.Distance) {
+// SetAll applies the same border style to all sides.
+func (b Borders) SetAll(_ wml.ST_Border, color compatcolor.Color, width float64) {
 	if b.border == nil {
 		return
 	}
@@ -767,17 +856,24 @@ func (b Borders) SetAll(_ wml.ST_Border, color compatcolor.Color, width measurem
 	b.border.width = width
 }
 
+// ImageRef references a loaded image in the document.
 type ImageRef struct {
-	image  media.Image
-	width  measurement.Distance
-	height measurement.Distance
+	image          media.Image
+	width          float64
+	height         float64
+	svgID          int
+	svgPlaceholder string
+	svgRelID       string
+	svgMediaName   string
 }
 
+// DrawingInline represents an inline image drawing.
 type DrawingInline struct {
 	ref *ImageRef
 }
 
-func (d *DrawingInline) SetSize(width, height measurement.Distance) {
+// SetSize sets the inline drawing dimensions.
+func (d *DrawingInline) SetSize(width, height float64) {
 	if d == nil || d.ref == nil {
 		return
 	}
@@ -785,10 +881,12 @@ func (d *DrawingInline) SetSize(width, height measurement.Distance) {
 	d.ref.height = height
 }
 
+// Header represents the default document header.
 type Header struct {
 	model *headerFooterModel
 }
 
+// AddParagraph appends a paragraph to the header.
 func (h Header) AddParagraph() Paragraph {
 	if h.model == nil {
 		return Paragraph{}
@@ -798,10 +896,12 @@ func (h Header) AddParagraph() Paragraph {
 	return Paragraph{model: model}
 }
 
+// Footer represents the default document footer.
 type Footer struct {
 	model *headerFooterModel
 }
 
+// AddParagraph appends a paragraph to the footer.
 func (f Footer) AddParagraph() Paragraph {
 	if f.model == nil {
 		return Paragraph{}
@@ -811,11 +911,13 @@ func (f Footer) AddParagraph() Paragraph {
 	return Paragraph{model: model}
 }
 
+// Section represents section-level document properties.
 type Section struct {
 	doc   *Document
 	model *sectionModel
 }
 
+// SetHeader applies a header to the section.
 func (s Section) SetHeader(header Header, _ wml.ST_HdrFtr) {
 	if s.doc != nil {
 		s.doc.defaultHeader = header.model
@@ -825,6 +927,7 @@ func (s Section) SetHeader(header Header, _ wml.ST_HdrFtr) {
 	}
 }
 
+// SetFooter applies a footer to the section.
 func (s Section) SetFooter(footer Footer, _ wml.ST_HdrFtr) {
 	if s.doc != nil {
 		s.doc.defaultFooter = footer.model
@@ -834,277 +937,15 @@ func (s Section) SetFooter(footer Footer, _ wml.ST_HdrFtr) {
 	}
 }
 
-type Styles struct{}
-
-func (s *Styles) AddStyle(_ string, _ wml.ST_StyleType, _ bool) Style {
-	return Style{props: &runPropsModel{}}
-}
-
-type Style struct {
-	props *runPropsModel
-}
-
-func (s Style) SetName(_ string)    {}
-func (s Style) SetBasedOn(_ string) {}
-func (s Style) RunProperties() RunProperties {
-	return RunProperties{props: s.props}
-}
-
-type Numbering struct {
-	definitions []*definitionModel
-	nextID      int
-}
-
-func (n *Numbering) AddDefinition() Definition {
-	if n == nil {
-		return Definition{}
-	}
-	n.nextID++
-	model := &definitionModel{
-		id:         n.nextID,
-		abstractID: n.nextID,
-	}
-	n.definitions = append(n.definitions, model)
-	return Definition{model: model}
-}
-
-type Definition struct {
-	model *definitionModel
-}
-
-type definitionModel struct {
-	id         int
-	abstractID int
-	level      *levelModel
-}
-
-func (d *Definition) AddLevel() Level {
-	if d == nil || d.model == nil {
-		return Level{}
-	}
-	d.model.level = &levelModel{props: &runPropsModel{}, start: 1}
-	return Level{model: d.model.level}
-}
-
-func (d Definition) NumberID() int {
-	if d.model == nil {
-		return 0
-	}
-	return d.model.id
-}
-
-func (d Definition) LevelIndex() int {
-	if d.model == nil || d.model.level == nil {
-		return 0
-	}
-	return d.model.level.index
-}
-
-type Level struct {
-	model *levelModel
-}
-
-type levelModel struct {
-	index      int
-	format     wml.ST_NumberFormat
-	text       string
-	suffix     string
-	start      int
-	leftIndent int
-	hanging    int
-	props      *runPropsModel
-	hasFormat  bool
-	hasIndent  bool
-}
-
-func (l Level) SetFormat(format wml.ST_NumberFormat) {
-	if l.model == nil {
-		return
-	}
-	l.model.format = format
-	l.model.hasFormat = true
-}
-
-func (l Level) SetText(text string) {
-	if l.model != nil {
-		l.model.text = text
-	}
-}
-
-func (l Level) SetSuffix(suffix string) {
-	if l.model == nil {
-		return
-	}
-	l.model.suffix = normalizeNumberingSuffix(suffix)
-}
-
-func (l Level) SetStart(start int) {
-	if l.model == nil {
-		return
-	}
-	if start < 1 {
-		start = 1
-	}
-	l.model.start = start
-}
-
-func (l Level) SetIndent(left, hanging measurement.Distance) {
-	if l.model == nil {
-		return
-	}
-	l.model.leftIndent = pointsToTwips(left)
-	l.model.hanging = pointsToTwips(hanging)
-	l.model.hasIndent = true
-}
-
-func (l Level) RunProperties() RunProperties {
-	if l.model == nil {
-		return RunProperties{}
-	}
-	if l.model.props == nil {
-		l.model.props = &runPropsModel{}
-	}
-	return RunProperties{props: l.model.props}
-}
-
-func (n *Numbering) XML() []byte {
-	if n == nil || len(n.definitions) == 0 {
-		return nil
-	}
-
-	var buf bytes.Buffer
-	buf.WriteString(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`)
-	buf.WriteString(`<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">`)
-	for _, def := range n.definitions {
-		if def == nil || def.level == nil {
-			continue
-		}
-		level := def.level
-		buf.WriteString(fmt.Sprintf(`<w:abstractNum w:abstractNumId="%d">`, def.abstractID))
-		buf.WriteString(`<w:multiLevelType w:val="singleLevel"/>`)
-		buf.WriteString(fmt.Sprintf(`<w:lvl w:ilvl="%d">`, level.index))
-		buf.WriteString(fmt.Sprintf(`<w:start w:val="%d"/>`, normalizeNumberingStart(level.start)))
-		buf.WriteString(fmt.Sprintf(`<w:numFmt w:val="%s"/>`, level.formatValue()))
-		if level.suffix != "" {
-			buf.WriteString(fmt.Sprintf(`<w:suff w:val="%s"/>`, xmlEscapeAttr(level.suffix)))
-		}
-		buf.WriteString(fmt.Sprintf(`<w:lvlText w:val="%s"/>`, xmlEscapeAttr(level.textValue())))
-		buf.WriteString(`<w:lvlJc w:val="left"/>`)
-		if level.hasIndent {
-			buf.WriteString(fmt.Sprintf(`<w:pPr><w:ind w:left="%d" w:hanging="%d"/></w:pPr>`, level.leftIndent, level.hanging))
-		}
-		if runPropsXML := numberingRunPropertiesXML(level.props); runPropsXML != "" {
-			buf.WriteString(runPropsXML)
-		}
-		buf.WriteString(`</w:lvl>`)
-		buf.WriteString(`</w:abstractNum>`)
-		buf.WriteString(fmt.Sprintf(`<w:num w:numId="%d"><w:abstractNumId w:val="%d"/></w:num>`, def.id, def.abstractID))
-	}
-	buf.WriteString(`</w:numbering>`)
-	return buf.Bytes()
-}
-
-func (l *levelModel) formatValue() string {
-	if l == nil {
-		return "decimal"
-	}
-	if l.hasFormat && l.format == wml.ST_NumberFormatBullet {
-		return "bullet"
-	}
-	return "decimal"
-}
-
-func (l *levelModel) textValue() string {
-	if l == nil {
-		return "%1."
-	}
-	if l.text != "" {
-		return l.text
-	}
-	if l.hasFormat && l.format == wml.ST_NumberFormatBullet {
-		return "•"
-	}
-	return "%1."
-}
-
-func normalizeNumberingStart(start int) int {
-	if start < 1 {
-		return 1
-	}
-	return start
-}
-
-func normalizeNumberingSuffix(suffix string) string {
-	switch strings.TrimSpace(suffix) {
-	case "tab", "space", "nothing":
-		return strings.TrimSpace(suffix)
-	default:
-		return "space"
-	}
-}
-
-func numberingRunPropertiesXML(props *runPropsModel) string {
-	if props == nil {
-		return ""
-	}
-
-	var buf bytes.Buffer
-	if props.font.Name != "" || props.font.EastAsia != "" || props.font.CS != "" || props.fontX.AsciiAttr != nil || props.fontX.EastAsiaAttr != nil {
-		font := props.font
-		if props.fontX.AsciiAttr != nil {
-			font.Name = *props.fontX.AsciiAttr
-		}
-		if props.fontX.EastAsiaAttr != nil {
-			font.EastAsia = *props.fontX.EastAsiaAttr
-		}
-		if font.Name == "" && font.EastAsia != "" {
-			font.Name = font.EastAsia
-		}
-		buf.WriteString(`<w:rFonts`)
-		if font.Name != "" {
-			escaped := xmlEscapeAttr(font.Name)
-			buf.WriteString(fmt.Sprintf(` w:ascii="%s" w:hAnsi="%s"`, escaped, escaped))
-		}
-		if font.EastAsia != "" {
-			buf.WriteString(fmt.Sprintf(` w:eastAsia="%s"`, xmlEscapeAttr(font.EastAsia)))
-		}
-		if font.CS != "" {
-			buf.WriteString(fmt.Sprintf(` w:cs="%s"`, xmlEscapeAttr(font.CS)))
-		}
-		buf.WriteString(`/>`)
-	}
-	if props.hasSize {
-		size := pointsToHalfPoints(props.sizePt)
-		buf.WriteString(fmt.Sprintf(`<w:sz w:val="%d"/>`, size))
-		buf.WriteString(fmt.Sprintf(`<w:szCs w:val="%d"/>`, size))
-	}
-	if props.bold {
-		buf.WriteString(`<w:b/>`)
-	}
-	if props.italic {
-		buf.WriteString(`<w:i/>`)
-	}
-	if props.hasColor {
-		buf.WriteString(fmt.Sprintf(`<w:color w:val="%02X%02X%02X"/>`, props.color.R, props.color.G, props.color.B))
-	}
-	if buf.Len() == 0 {
-		return ""
-	}
-	return `<w:rPr>` + buf.String() + `</w:rPr>`
-}
-
-func xmlEscapeAttr(value string) string {
-	var buf strings.Builder
-	_ = xml.EscapeText(&buf, []byte(value))
-	return buf.String()
-}
-
 func renderParagraph(add func() (domain.Paragraph, error), model *paragraphModel) error {
 	out, err := add()
 	if err != nil {
 		return err
 	}
 
+	if model.style != "" {
+		_ = out.SetStyle(model.style)
+	}
 	if model.props.hasAlignment {
 		_ = out.SetAlignment(toDomainAlignment(model.props.alignment))
 	}
@@ -1174,6 +1015,8 @@ func renderParagraph(add func() (domain.Paragraph, error), model *paragraphModel
 				case FieldNumberOfPages:
 					_ = outRun.AddField(docxgo.NewPageCountField())
 				}
+			case runContentRawXML:
+				_ = outRun.AddText(rawXMLPlaceholder(content.rawXML))
 			}
 		}
 	}
@@ -1196,6 +1039,9 @@ func runContents(run *runModel) []runContentModel {
 func renderImageRun(out domain.Paragraph, ref *ImageRef) error {
 	if ref == nil {
 		return nil
+	}
+	if ref.isSVG() {
+		return renderSVGImageRun(out, ref)
 	}
 	size := imageSize(ref.width, ref.height)
 	_, err := out.AddImageFromBytesWithSize(ref.image.Data, ref.image.Format, size)
@@ -1351,7 +1197,7 @@ func toDomainAlignment(align wml.ST_Jc) domain.Alignment {
 	}
 }
 
-func pointsToTwips(value measurement.Distance) int {
+func pointsToTwips(value float64) int {
 	return int(math.Round(float64(value) * 20))
 }
 
@@ -1363,7 +1209,7 @@ func pointsToHalfPoints(value float64) int {
 	return halfPoints
 }
 
-func imageSize(width, height measurement.Distance) domain.ImageSize {
+func imageSize(width, height float64) domain.ImageSize {
 	wPt := float64(width)
 	hPt := float64(height)
 	if wPt <= 0 {

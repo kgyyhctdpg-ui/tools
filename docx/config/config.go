@@ -1,10 +1,8 @@
-package docx
+package config
 
-import (
-	"github.com/scoming-dev/tools/docx/measurement"
-	"github.com/scoming-dev/tools/docx/schema/soo/wml"
-)
+import "github.com/scoming-dev/tools/docx/schema/soo/wml"
 
+// Config contains all renderer-level typography, spacing, page, and plugin preset settings.
 type Config struct {
 	Fonts        FontConfig
 	Text         TextConfig
@@ -20,58 +18,67 @@ type Config struct {
 	List         ListConfig
 }
 
+// FontConfig defines the document font families used by generated runs.
 type FontConfig struct {
 	Content string
 	Title   string
 	Latin   string
 }
 
+// TextConfig defines point sizes for the main document text tiers.
 type TextConfig struct {
 	ContentSize  int
 	SubTitleSize int
 	TitleSize    int
 }
 
+// ParagraphConfig defines default paragraph layout for normal content.
 type ParagraphConfig struct {
 	LineHeightMultiplier float64
-	FirstLineIndent      measurement.Distance
+	FirstLineIndent      float64
 	Alignment            wml.ST_Jc
 }
 
+// HeadingConfig defines heading font sizes and level-one alignment.
 type HeadingConfig struct {
 	Sizes             []int
 	LevelOneAlignment wml.ST_Jc
 }
 
+// HeaderFooterConfig defines generated header and footer text styling.
 type HeaderFooterConfig struct {
 	FontSize     int
 	Alignment    wml.ST_Jc
 	FooterSuffix string
 }
 
+// TOCConfig defines table-of-contents typography and indentation.
 type TOCConfig struct {
 	TitleFontSize      int
 	ItemFontSize       int
-	TitleSpacingBefore measurement.Distance
-	TitleSpacingAfter  measurement.Distance
-	IndentPerDepth     measurement.Distance
+	TitleSpacingBefore float64
+	TitleSpacingAfter  float64
+	IndentPerDepth     float64
 }
 
+// TableConfig defines default table border, spacing, and text styling.
 type TableConfig struct {
 	HeaderFontSize       int
 	CellFontSize         int
-	CellCharacterSpacing measurement.Distance
+	CellCharacterSpacing float64
 	BorderColor          string
-	BorderWidth          measurement.Distance
-	AfterLineSpacing     measurement.Distance
+	BorderWidth          float64
+	AfterLineSpacing     float64
 }
 
+// MediaConfig defines paragraph layout for embedded media-like blocks.
 type MediaConfig struct {
-	SpacingBefore measurement.Distance
-	SpacingAfter  measurement.Distance
+	SpacingBefore float64
+	SpacingAfter  float64
 	Alignment     wml.ST_Jc
 }
 
+// CoverConfig defines defaults used by cover page plugins.
 type CoverConfig struct {
 	Report           ThreePartCoverConfig
 	SpecialDebt      ThreePartCoverConfig
@@ -80,29 +87,33 @@ type CoverConfig struct {
 	DefaultAlignment wml.ST_Jc
 }
 
+// ThreePartCoverConfig defines title, subtitle, and detail styling for preset covers.
 type ThreePartCoverConfig struct {
 	TitleSize         int
 	SubtitleSize      int
 	DetailSize        int
-	TitleSpacing      measurement.Distance
-	SubtitleSpacing   measurement.Distance
+	TitleSpacing      float64
+	SubtitleSpacing   float64
 	DetailAlignment   wml.ST_Jc
-	DetailStartIndent measurement.Distance
+	DetailStartIndent float64
 }
 
+// PageConfig defines page-level defaults.
 type PageConfig struct {
 	MarginMM float64
 }
 
+// ListConfig defines numbering marker and nested-list typography.
 type ListConfig struct {
 	FirstLevelFontSize  int
 	SecondLevelFontSize int
 	ThirdLevelFontSize  int
 	ThirdLevelFont      string
-	FirstLineIndent     measurement.Distance
+	FirstLineIndent     float64
 	MarkerSuffix        string
 }
 
+// DefaultConfig returns the renderer defaults used when options leave fields unset.
 func DefaultConfig() Config {
 	return Config{
 		Fonts: FontConfig{
@@ -117,7 +128,7 @@ func DefaultConfig() Config {
 		},
 		Paragraph: ParagraphConfig{
 			LineHeightMultiplier: 1.3,
-			FirstLineIndent:      measurement.Distance(28),
+			FirstLineIndent:      float64(28),
 			Alignment:            wml.ST_JcBoth,
 		},
 		Heading: HeadingConfig{
@@ -127,31 +138,31 @@ func DefaultConfig() Config {
 		HeaderFooter: HeaderFooterConfig{
 			FontSize:     10,
 			Alignment:    wml.ST_JcCenter,
-			FooterSuffix: "                                        此内容由(DP-Ai)生成",
+			FooterSuffix: "",
 		},
 		TOC: TOCConfig{
 			TitleFontSize:      22,
 			ItemFontSize:       14,
-			TitleSpacingBefore: measurement.Distance(12),
-			TitleSpacingAfter:  measurement.Distance(18),
-			IndentPerDepth:     measurement.Distance(24),
+			TitleSpacingBefore: float64(12),
+			TitleSpacingAfter:  float64(18),
+			IndentPerDepth:     float64(24),
 		},
 		Table: TableConfig{
 			HeaderFontSize:       10,
 			CellFontSize:         8,
-			CellCharacterSpacing: measurement.Distance(0),
+			CellCharacterSpacing: float64(0),
 			BorderColor:          "#000000",
-			BorderWidth:          measurement.Point * 0.5,
-			AfterLineSpacing:     measurement.Distance(14),
+			BorderWidth:          0.5,
+			AfterLineSpacing:     float64(14),
 		},
 		Image: MediaConfig{
-			SpacingBefore: measurement.Distance(6),
-			SpacingAfter:  measurement.Distance(6),
+			SpacingBefore: float64(6),
+			SpacingAfter:  float64(6),
 			Alignment:     wml.ST_JcCenter,
 		},
 		Math: MediaConfig{
-			SpacingBefore: measurement.Distance(6),
-			SpacingAfter:  measurement.Distance(6),
+			SpacingBefore: float64(6),
+			SpacingAfter:  float64(6),
 			Alignment:     wml.ST_JcCenter,
 		},
 		Cover: CoverConfig{
@@ -159,26 +170,26 @@ func DefaultConfig() Config {
 				TitleSize:       36,
 				SubtitleSize:    24,
 				DetailSize:      16,
-				TitleSpacing:    measurement.Distance(240),
-				SubtitleSpacing: measurement.Distance(240),
+				TitleSpacing:    float64(240),
+				SubtitleSpacing: float64(240),
 				DetailAlignment: wml.ST_JcCenter,
 			},
 			SpecialDebt: ThreePartCoverConfig{
 				TitleSize:       36,
 				SubtitleSize:    24,
 				DetailSize:      16,
-				TitleSpacing:    measurement.Distance(240),
-				SubtitleSpacing: measurement.Distance(240),
+				TitleSpacing:    float64(240),
+				SubtitleSpacing: float64(240),
 				DetailAlignment: wml.ST_JcCenter,
 			},
 			Embodiment: ThreePartCoverConfig{
 				TitleSize:         20,
 				SubtitleSize:      26,
 				DetailSize:        16,
-				TitleSpacing:      measurement.Distance(150),
-				SubtitleSpacing:   measurement.Distance(150),
+				TitleSpacing:      float64(150),
+				SubtitleSpacing:   float64(150),
 				DetailAlignment:   wml.ST_JcLeft,
-				DetailStartIndent: measurement.Distance(24) * 5,
+				DetailStartIndent: float64(24) * 5,
 			},
 			DefaultFont:      "黑体",
 			DefaultAlignment: wml.ST_JcCenter,
@@ -191,13 +202,14 @@ func DefaultConfig() Config {
 			SecondLevelFontSize: 10,
 			ThirdLevelFontSize:  14,
 			ThirdLevelFont:      "Times New Roman",
-			FirstLineIndent:     measurement.Distance(28),
+			FirstLineIndent:     float64(28),
 			MarkerSuffix:        "space",
 		},
 	}
 }
 
-func (c Config) withDefaults() Config {
+// WithDefaults fills unset fields from DefaultConfig.
+func (c Config) WithDefaults() Config {
 	defaults := DefaultConfig()
 	if c.Fonts.Content == "" {
 		c.Fonts.Content = defaults.Fonts.Content

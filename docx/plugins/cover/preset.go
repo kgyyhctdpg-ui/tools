@@ -2,10 +2,10 @@ package cover
 
 import (
 	"github.com/scoming-dev/tools/docx"
-	"github.com/scoming-dev/tools/docx/measurement"
 	"github.com/scoming-dev/tools/docx/schema/soo/wml"
 )
 
+// ThreePartCover renders a cover page with title, subtitle, and detail lines.
 type ThreePartCover struct {
 	Preset            Preset
 	Title             string
@@ -14,14 +14,15 @@ type ThreePartCover struct {
 	TitleSize         int
 	SubtitleSize      int
 	DetailSize        int
-	TitleSpacing      measurement.Distance
-	SubtitleSpacing   measurement.Distance
+	TitleSpacing      float64
+	SubtitleSpacing   float64
 	DetailAlignment   *wml.ST_Jc
-	DetailStartIndent measurement.Distance
+	DetailStartIndent float64
 	VerticalSubtitle  bool
 	IncludeTOC        bool
 }
 
+// Preset selects one of the configured cover defaults.
 type Preset int
 
 const (
@@ -31,6 +32,7 @@ const (
 	PresetEmbodiment
 )
 
+// Report returns the default report cover.
 func Report() docx.CoverPlugin {
 	return ThreePartCover{
 		Preset:     PresetReport,
@@ -41,6 +43,7 @@ func Report() docx.CoverPlugin {
 	}
 }
 
+// SpecialDebt returns the default special-debt report cover.
 func SpecialDebt() docx.CoverPlugin {
 	return ThreePartCover{
 		Preset:     PresetSpecialDebt,
@@ -51,6 +54,7 @@ func SpecialDebt() docx.CoverPlugin {
 	}
 }
 
+// Embodiment returns the default implementation-plan cover.
 func Embodiment() docx.CoverPlugin {
 	return ThreePartCover{
 		Preset:           PresetEmbodiment,
@@ -62,6 +66,7 @@ func Embodiment() docx.CoverPlugin {
 	}
 }
 
+// RenderCover renders the configured cover into the current document.
 func (c ThreePartCover) RenderCover(renderer *docx.DocxRenderer) error {
 	config := renderer.Config()
 	c = c.withDefaults(config)
@@ -161,6 +166,7 @@ func (c ThreePartCover) detailAlignment() wml.ST_Jc {
 	return *c.DetailAlignment
 }
 
+// Alignment returns a pointer to an alignment value for optional cover fields.
 func Alignment(alignment wml.ST_Jc) *wml.ST_Jc {
 	return &alignment
 }

@@ -1,3 +1,4 @@
+// Package color provides small helpers around docxgo colors.
 package color
 
 import (
@@ -7,12 +8,15 @@ import (
 	"github.com/mmonterroca/docxgo/v2/domain"
 )
 
+// Color is the RGB color type used by the document compatibility layer.
 type Color = domain.Color
 
+// RGB builds a Color from red, green, and blue components.
 func RGB(r, g, b uint8) Color {
 	return Color{R: r, G: g, B: b}
 }
 
+// FromHex parses a six-digit RGB hex value such as "#D9D9D9".
 func FromHex(value string) Color {
 	value = strings.TrimPrefix(strings.TrimSpace(value), "#")
 	if len(value) != 6 {

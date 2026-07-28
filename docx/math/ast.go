@@ -1,4 +1,3 @@
-// Package math provides LaTeX to OMML (Office Math Markup Language) conversion.
 package math
 
 // Expr is an alias for Exp for backward compatibility.

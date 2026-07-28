@@ -8,7 +8,7 @@ type OMath struct {
 type CT_OMath struct{}
 
 type OMathPara struct {
-	OMath []*CT_OMath
+	OMath []*OMath
 }
 
 type EG_OMathMathElements struct {

@@ -1,6 +1,7 @@
+// Package common contains shared helpers and table data types for DOCX plugins.
 package common
 
-// MergedCell 表示一个合并单元格的范围
+// MergedCell describes one merged-cell range using zero-based row and column indexes.
 type MergedCell struct {
 	StartRow int
 	EndRow   int
@@ -9,7 +10,9 @@ type MergedCell struct {
 	Ref      string
 }
 
-// SheetConfig 工作表配置
+// SheetConfig selects the rows and columns to extract from a worksheet.
+// Start and end fields are public 1-based indexes; GetSheetConfig normalizes
+// them to zero-based indexes before extraction.
 type SheetConfig struct {
 	Name     string // 工作表名称，为空表示匹配所有
 	StartRow int    // 开始行（从1开始计算，如Excel），默认1表示第1行
@@ -19,7 +22,7 @@ type SheetConfig struct {
 	BoldRows []int  // 加粗的行号
 }
 
-// TableData 表示一个表格的数据
+// TableData is the normalized worksheet data consumed by table renderers.
 type TableData struct {
 	SheetName   string       // 工作表名称
 	Rows        [][]string   // 单元格数据（二维数组）

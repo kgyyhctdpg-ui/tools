@@ -39,8 +39,7 @@ func (b *Builder) BuildOMathPara(expr Exp) (*mathSchema.OMathPara, error) {
 		return nil, err
 	}
 
-	// OMathPara.OMath is a slice of CT_OMath
-	oMathPara.OMath = append(oMathPara.OMath, &oMath.CT_OMath)
+	oMathPara.OMath = append(oMathPara.OMath, oMath)
 
 	return oMathPara, nil
 }
@@ -226,19 +225,15 @@ func (b *Builder) buildElement(expr Exp) (*mathSchema.EG_OMathMathElements, erro
 }
 
 // buildTextRun creates a text run element.
-func (b *Builder) buildTextRun(text string, textType TextType) (*mathSchema.CT_R, error) {
+func (b *Builder) buildTextRun(text string, _ TextType) (*mathSchema.CT_R, error) {
 	r := mathSchema.NewCT_R()
 
-	// Create text content
 	t := mathSchema.NewCT_Text()
 	t.Content = text
 
-	// Add text to R's choice
 	r.Choice = append(r.Choice, &mathSchema.CT_RChoice{
 		T: []*mathSchema.CT_Text{t},
 	})
-
-	// TODO: Add styling based on textType if needed
 
 	return r, nil
 }

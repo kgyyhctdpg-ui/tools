@@ -8,26 +8,29 @@ import (
 	"github.com/scoming-dev/tools/docx"
 	"github.com/scoming-dev/tools/docx/color"
 	"github.com/scoming-dev/tools/docx/common"
-	"github.com/scoming-dev/tools/docx/measurement"
 	"github.com/scoming-dev/tools/docx/schema/soo/wml"
 	"github.com/xuri/excelize/v2"
 )
 
+// ExcelTablePlugin renders a configured worksheet range from an Excel file into the DOCX document.
 type ExcelTablePlugin struct {
 	tagType      string
 	sheetConfigs []common.SheetConfig
 }
 
+// NewExcelTablePlugin creates a table embedding plugin for a custom s-tag type.
 func NewExcelTablePlugin(tagType string, sheetConfigs []common.SheetConfig) *ExcelTablePlugin {
 	configs := make([]common.SheetConfig, len(sheetConfigs))
 	copy(configs, sheetConfigs)
 	return &ExcelTablePlugin{tagType: tagType, sheetConfigs: configs}
 }
 
+// Type returns the s-tag type handled by this plugin.
 func (p *ExcelTablePlugin) Type() string {
 	return p.tagType
 }
 
+// RenderHTML embeds the matching worksheet table declared by the s-tag.
 func (p *ExcelTablePlugin) RenderHTML(renderer *docx.DocxRenderer, content string) error {
 	excelPath := common.GetNodeValue(content, "s-tag", "url")
 	sheetName := common.GetNodeValue(content, "s-tag", "name")
@@ -46,29 +49,40 @@ func (p *ExcelTablePlugin) RenderHTML(renderer *docx.DocxRenderer, content strin
 	return nil
 }
 
+// FinancialCalculation returns the legacy financial-calculation table preset.
 func FinancialCalculation() docx.HTMLBlockPlugin {
 	return NewExcelTablePlugin("cwcs", FinancialCalculationSheetConfigs())
 }
 
+// Performance returns the legacy performance-goal table preset.
 func Performance() docx.HTMLBlockPlugin {
 	return NewExcelTablePlugin("performance", []common.SheetConfig{
 		{Name: "绩效目标表", StartRow: 2, StartCol: 0, EndRow: 0, EndCol: 0, BoldRows: []int{}},
 	})
 }
 
+// Assessment returns the legacy performance-assessment table preset.
 func Assessment() docx.HTMLBlockPlugin {
 	return NewExcelTablePlugin("assessment", []common.SheetConfig{
 		{Name: "绩效评估表", StartRow: 0, StartCol: 0, EndRow: 27, EndCol: 0, BoldRows: []int{}},
 	})
 }
 
+// Tender returns the legacy tender-basic-info table preset.
 func Tender() docx.HTMLBlockPlugin {
 	return NewExcelTablePlugin("tender", []common.SheetConfig{
 		{Name: "招标基本情况表", StartRow: 2, StartCol: 0, EndRow: 10, EndCol: 0, BoldRows: []int{2, 3}},
 	})
 }
 
+// DefaultPlugins intentionally returns no business presets.
+// Register NewExcelTablePlugin or BusinessPresetPlugins explicitly for project-specific table tags.
 func DefaultPlugins() []docx.HTMLBlockPlugin {
+	return nil
+}
+
+// BusinessPresetPlugins returns the legacy project-specific table plugins for callers that still need them.
+func BusinessPresetPlugins() []docx.HTMLBlockPlugin {
 	return []docx.HTMLBlockPlugin{
 		InvestmentEstimate(),
 		FinancialCalculation(),
@@ -78,6 +92,7 @@ func DefaultPlugins() []docx.HTMLBlockPlugin {
 	}
 }
 
+// FinancialCalculationSheetConfigs returns the legacy worksheet ranges for financial-calculation workbooks.
 func FinancialCalculationSheetConfigs() []common.SheetConfig {
 	return []common.SheetConfig{
 		{Name: "项目基本情况", StartRow: 2, StartCol: 0, EndRow: 0, EndCol: 0, BoldRows: []int{1}},
@@ -260,7 +275,7 @@ func generateDocFromTables(renderer *docx.DocxRenderer, tables []common.TableDat
 				run := para.AddRun()
 				runProps := run.Properties()
 				runProps.SetFontFamily(config.Fonts.Content)
-				runProps.SetSize(measurement.Point * measurement.Distance(config.Table.CellFontSize))
+				runProps.SetSize(float64(config.Table.CellFontSize))
 
 				if slices.Contains(tableData.BoldRows, rowIdx+1) {
 					runProps.SetBold(true)
