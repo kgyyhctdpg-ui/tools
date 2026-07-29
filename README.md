@@ -34,6 +34,43 @@ go test ./...
 
 ## DOCX 快速示例
 
+### DOCX CLI
+
+仓库提供了一个 Markdown 转 DOCX 的命令行工具，可以通过 Makefile 构建多平台版本。
+
+构建多平台版本：
+
+```bash
+make build-docx-cli-all
+```
+
+CLI 默认使用 `-trimpath -ldflags="-s -w"` 构建，去掉本地路径、符号表和调试信息以减小二进制体积；表格插件仍然保留。
+
+默认会生成：
+
+```text
+bin/docx-darwin-amd64
+bin/docx-darwin-arm64
+bin/docx-linux-amd64
+bin/docx-linux-arm64
+bin/docx-windows-amd64.exe
+bin/docx-windows-arm64.exe
+```
+
+选择当前平台的二进制直接执行：
+
+```bash
+bin/docx-darwin-arm64 -input report.md -output tmp/report.docx -cover none -heading-style default
+```
+
+不传任何参数时，CLI 会直接输出帮助信息。
+
+如果 Markdown 中使用通用表格标签，例如 `<s-tag type="excel" url="data.xlsx" name="Sheet1"></s-tag>`，可以启用对应标签插件：
+
+```bash
+bin/docx-darwin-arm64 -input report.md -output tmp/report.docx -table-tags excel
+```
+
 ```go
 package main
 
@@ -159,4 +196,3 @@ _ = cfg
 - 修改后建议运行 `go test ./...`。
 - 不提交 `tmp/`、`docx/tmp/`、测试输出文档、服务密钥和本地配置文件。
 - 涉及第三方服务的测试应使用临时凭据或 mock，避免把真实密钥写入仓库。
-
