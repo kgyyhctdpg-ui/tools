@@ -4,10 +4,14 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/scoming-dev/tools/utils"
+	toolscrypto "github.com/scoming-dev/tools/crypto"
 )
 
 // 生成单号
 func GenSn(snPrefix string) string {
-	return fmt.Sprintf("%s%s%s", snPrefix, time.Now().Format("20060102150405"), utils.Krand(8, 0))
+	suffix, err := toolscrypto.RandomDigits(8)
+	if err != nil {
+		suffix = fmt.Sprintf("%08d", time.Now().UnixNano()%100000000)
+	}
+	return fmt.Sprintf("%s%s%s", snPrefix, time.Now().Format("20060102150405"), suffix)
 }

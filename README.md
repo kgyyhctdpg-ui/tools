@@ -1,6 +1,6 @@
 # tools
 
-`github.com/scoming-dev/tools` 是一组 Go 业务工具包，当前包含 DOCX 生成、对象存储、验证码、OnlyOffice 配置、HTTP 请求、唯一 ID、Casbin RBAC 和通用工具方法。
+`github.com/scoming-dev/tools` 是一组 Go 业务工具包，当前包含 DOCX 生成、对象存储、验证码、OnlyOffice 配置、HTTP 请求、缓存抽象、文件工具、JSON、字符串、网络、业务校验、图片处理、加密签名、Excel、金额、短信、唯一 ID、Casbin RBAC 和通用工具方法。
 
 ## 环境要求
 
@@ -27,10 +27,21 @@ go test ./...
 | `oss` | 统一对象存储接口，支持 MinIO、阿里云 OSS、华为 OBS。 |
 | `captcha` | 点击、滑块、旋转验证码生成和缓存校验。 |
 | `onlyoffice` | OnlyOffice 文档类型识别、JWT、文档配置构建。 |
-| `request` | HTTP GET/POST 请求工具，支持超时。 |
+| `cache` | 通用缓存接口和并发安全的内存实现，支持 TTL、SetNX、Remember。 |
+| `filex` | 文件判断、大小格式化、MIME、hash、base64、HTTP 下载和本地路径准备。 |
+| `jsonx` | JSON 编码/解码、压缩、美化、合法性判断、深拷贝、map 转换和点路径读写。 |
+| `stringx` | 字符串截取、补齐、脱敏、命名风格转换、去重、分割清洗和安全随机字符串。 |
+| `networkx` | 客户端 IP、IPv4/IPv6、公网/内网、CIDR、HostPort、本机 IP、可用端口和 TCP 探测。 |
+| `validator` | 手机号、邮箱、URL、IP、身份证、统一社会信用代码、银行卡、金额、中文姓名、密码强度校验。 |
+| `httpx` | HTTP 客户端，支持 JSON、query、默认 header、重试、状态错误、文件上传下载。 |
+| `imagex` | 图片尺寸、MIME、base64/data URI、JPEG 压缩、等比缩放、PNG/JPEG/GIF 保存。 |
+| `crypto` | MD5、SHA256、HMAC-SHA256、安全随机串、AES-GCM/CBC、RSA-SHA256 签名验签。 |
+| `excel` | XLSX 快速导出和读取，支持 map/slice 导出、表头样式、冻结表头、筛选。 |
+| `money` | 基于 decimal 的金额加减乘除、格式化、元分转换、人民币大写。 |
+| `sms` | 聚合短信接口，内置阿里云、腾讯云、云片、Submail、聚合数据、螺丝帽、创蓝和通用 HTTP 适配。 |
 | `uniqueid` | 业务单号和 Sonyflake ID 生成。 |
 | `casbinx` | 基于 GORM 的 Casbin RBAC 初始化工具。 |
-| `utils` | 随机串、MD5、JSON 压缩、手机号/邮箱校验、文件和图片工具、精确小数运算等。 |
+| `utils` | 保留少量兼容入口，内部转发到 `jsonx`、`stringx`、`networkx`。 |
 
 ## DOCX 快速示例
 

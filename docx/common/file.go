@@ -1,17 +1,17 @@
 package common
 
 import (
+	"context"
 	"crypto/md5"
 	"encoding/hex"
 	"fmt"
-	"io"
 	"log"
-	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
+
+	"github.com/scoming-dev/tools/filex"
 )
 
 // PrepareFilepath returns a local file path, downloading and caching HTTP(S) URLs when needed.
@@ -44,7 +44,7 @@ func PrepareFilepath(filepathOrURL string) (string, bool, error) {
 		return finalPath, false, nil
 	}
 
-	tempFile, err := DownloadFile(filepathOrURL)
+	tempFile, err := filex.Download(context.Background(), filepathOrURL)
 	if err != nil {
 		return "", false, fmt.Errorf("下载文件失败: %w", err)
 	}
@@ -60,45 +60,4 @@ func PrepareFilepath(filepathOrURL string) (string, bool, error) {
 	}
 
 	return finalPath, true, nil
-}
-
-// DownloadFile downloads a URL into a temporary xlsx file and returns its path.
-func DownloadFile(urlStr string) (string, error) {
-	client := http.Client{
-		Timeout: 30 * time.Second,
-	}
-
-	req, err := http.NewRequest(http.MethodGet, urlStr, nil)
-	if err != nil {
-		return "", fmt.Errorf("创建请求失败: %w", err)
-	}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("下载文件失败: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("下载文件失败，状态码: %d", resp.StatusCode)
-	}
-
-	tempFile, err := os.CreateTemp("", "excel-download-*.xlsx")
-	if err != nil {
-		return "", fmt.Errorf("创建临时文件失败: %w", err)
-	}
-
-	_, err = io.Copy(tempFile, resp.Body)
-	if err != nil {
-		_ = tempFile.Close()
-		_ = os.Remove(tempFile.Name())
-		return "", fmt.Errorf("写入临时文件失败: %w", err)
-	}
-
-	if err := tempFile.Close(); err != nil {
-		_ = os.Remove(tempFile.Name())
-		return "", fmt.Errorf("关闭临时文件失败: %w", err)
-	}
-
-	return tempFile.Name(), nil
 }

@@ -15,14 +15,14 @@ var (
 )
 
 // 初始化 casbin
-func InitRBACCasbin(db *gorm.DB) (*casbin.Enforcer, error) {
+func InitRBACCasbin(db *gorm.DB, prefix string, tableName string) (*casbin.Enforcer, error) {
 
 	// 判断是否有缓存
 	if Enforcer != nil {
 		return Enforcer, nil
 	}
 
-	adapter, err := gormadapter.NewAdapterByDBUseTableName(db, "system", "casbin")
+	adapter, err := gormadapter.NewAdapterByDBUseTableName(db, prefix, tableName)
 	if err != nil {
 		log.Printf("连接数据库错误: %v", err)
 		return nil, err
