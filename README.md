@@ -1,6 +1,6 @@
 # tools
 
-`github.com/scoming-dev/tools` 是一组 Go 业务工具包，当前包含 DOCX 生成、对象存储、验证码、OnlyOffice 配置、HTTP 请求、缓存抽象、文件工具、JSON、字符串、网络、业务校验、图片处理、加密签名、Excel、金额、短信、唯一 ID、Casbin RBAC 和通用工具方法。
+`github.com/scoming-dev/tools` 是一组 Go 业务工具包，当前包含 DOCX 生成、文档转 Markdown、对象存储、验证码、OnlyOffice 配置、HTTP 请求、缓存抽象、文件工具、JSON、字符串、网络、业务校验、图片处理、加密签名、Excel、金额、短信、唯一 ID 和 Casbin RBAC。
 
 ## 环境要求
 
@@ -24,6 +24,7 @@ go test ./...
 | 包 | 说明 |
 | --- | --- |
 | `docx` | Markdown 转 DOCX，支持标题、目录、列表、表格、图片、SVG、原生 Office/WPS 公式和可扩展插件。 |
+| `markdown` | DOCX、XLSX、PPTX、PDF、EPUB、HTML、邮件、压缩包、图片和文本格式转 Markdown。 |
 | `oss` | 统一对象存储接口，支持 MinIO、阿里云 OSS、华为 OBS。 |
 | `captcha` | 点击、滑块、旋转验证码生成和缓存校验。 |
 | `onlyoffice` | OnlyOffice 文档类型识别、JWT、文档配置构建。 |
@@ -41,7 +42,75 @@ go test ./...
 | `sms` | 聚合短信接口，内置阿里云、腾讯云、云片、Submail、聚合数据、螺丝帽、创蓝和通用 HTTP 适配。 |
 | `uniqueid` | 业务单号和 Sonyflake ID 生成。 |
 | `casbinx` | 基于 GORM 的 Casbin RBAC 初始化工具。 |
-| `utils` | 保留少量兼容入口，内部转发到 `jsonx`、`stringx`、`networkx`。 |
+
+## Markdown 转换快速示例
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	"github.com/scoming-dev/tools/markdown"
+)
+
+func main() {
+	converter := markdown.New(
+		markdown.WithAssetsDirectory("report_files", "report_files"),
+	)
+	result, err := converter.Convert(context.Background(), "report.docx")
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(result.Markdown)
+}
+```
+
+DOCX 转换会将原生 OMML 公式输出为行内 `$...$` 或块级 `$$...$$` LaTeX。`WithAssetsDirectory` 会把 DrawingML、VML、SVG 和 MathType/OLE 预览图保存到独立目录，Markdown 中只保留相对文件链接；需要上传对象存储时，也可以通过 `WithImageHandler` 返回最终 URL：
+
+```go
+converter := markdown.New(markdown.WithImageHandler(
+	func(ctx context.Context, image markdown.Image) (string, error) {
+		return upload(ctx, image.Name, image.MIMEType, image.Data)
+	},
+))
+```
+
+表格默认输出 HTML。合并列使用 `colspan`，合并行使用 `rowspan`，两种合并同时存在时会分别保留。需要输出简单 Markdown 表格时，可以使用 `markdown.WithTableFormat(markdown.TableFormatMarkdown)`；含合并单元格的表格仍会使用 HTML，避免结构丢失。
+
+PDF 优先使用自部署 MinerU。服务端应启动 MinerU HTTP API 并提供同步 `POST /file_parse` 接口。客户端会上传 `files` multipart 文件，启用公式和表格识别，并请求返回 Markdown 与 Base64 图片。MinerU 的 `md_content` 会原样返回，不会在 Go 客户端重新排版或转换表格；服务端返回的图片仍通过 `ImageHandler` 外置、按内容去重并替换附件链接。
+
+```go
+minerUHandler, err := markdown.NewMinerUPDFHandler(markdown.MinerUConfig{
+	BaseURL: "http://127.0.0.1:8000",
+	Backend: "pipeline",
+	Language: "ch",
+})
+if err != nil {
+	log.Fatal(err)
+}
+converter := markdown.New(
+	markdown.WithPDFHandler(minerUHandler),
+	markdown.WithAssetsDirectory("report_files", "report_files"),
+)
+```
+
+`WithPDFHandler` 用于配置所有 PDF 的 MinerU 转换。未配置处理器时，PDF 会先用 go-fitz 生成 HTML，再交给 Lute 转成 Markdown，并返回 warning；这个降级路径只保留正文文本，表格、公式、图片、版面和扫描件 OCR 仍可能缺失。MinerU 请求失败时直接返回错误，没有再额外走本地降级。
+
+命令行使用：
+
+```bash
+go run ./cmd/markdown -i report.docx
+go run ./cmd/markdown -i report.docx -o report.md
+go run ./cmd/markdown -i report.pdf -o report.md --mineru-url http://127.0.0.1:8000
+make build-markdown-cli-all
+```
+
+MinerU CLI 还支持 `--mineru-endpoint`、`--mineru-token`、`--mineru-backend`、`--mineru-parse-method`、`--mineru-language` 和 `--mineru-timeout`。默认端点为 `/file_parse`，后端为 `pipeline`，解析方法为 `auto`，语言为 `ch`，超时为 20 分钟。
+
+CLI 使用输入文档文件名（basename，包含扩展名）的 MD5 作为附件目录名。使用 `-o result.md` 时，目录创建在输出文件同级；不传 `-o` 时创建在当前目录。Markdown 只保存 `<文件名MD5>/image.png` 形式的相对路径。内容相同的图片即使来源名称不同也只保存一份并复用链接；同名且内容不同的图片会自动添加数字后缀，不会互相覆盖。
 
 ## DOCX 快速示例
 

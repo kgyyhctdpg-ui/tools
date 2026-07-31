@@ -278,6 +278,20 @@ func (client *Client) JSON(ctx context.Context, method, rawURL string, out any, 
 
 // UploadFile sends a multipart/form-data POST request.
 func (client *Client) UploadFile(ctx context.Context, rawURL, fieldName, filePath string, fields map[string]string, opts ...RequestOption) (*Response, error) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	return client.upload(ctx, rawURL, fieldName, filepath.Base(filePath), file, fields, opts...)
+}
+
+// UploadBytes sends an in-memory file as a multipart/form-data POST request.
+func (client *Client) UploadBytes(ctx context.Context, rawURL, fieldName, fileName string, data []byte, fields map[string]string, opts ...RequestOption) (*Response, error) {
+	return client.upload(ctx, rawURL, fieldName, filepath.Base(fileName), bytes.NewReader(data), fields, opts...)
+}
+
+func (client *Client) upload(ctx context.Context, rawURL, fieldName, fileName string, file io.Reader, fields map[string]string, opts ...RequestOption) (*Response, error) {
 	var buf bytes.Buffer
 	writer := multipart.NewWriter(&buf)
 
@@ -287,13 +301,7 @@ func (client *Client) UploadFile(ctx context.Context, rawURL, fieldName, filePat
 		}
 	}
 
-	file, err := os.Open(filePath)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-
-	part, err := writer.CreateFormFile(fieldName, filepath.Base(filePath))
+	part, err := writer.CreateFormFile(fieldName, fileName)
 	if err != nil {
 		return nil, err
 	}

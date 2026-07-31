@@ -85,7 +85,7 @@ func TestStatusErrorAndRetry(t *testing.T) {
 }
 
 func TestUploadAndDownload(t *testing.T) {
-	uploaded := ""
+	uploaded := make([]string, 0, 2)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/upload" {
 			file, _, err := r.FormFile("file")
@@ -94,7 +94,7 @@ func TestUploadAndDownload(t *testing.T) {
 			}
 			defer file.Close()
 			data, _ := io.ReadAll(file)
-			uploaded = string(data)
+			uploaded = append(uploaded, string(data))
 			_, _ = w.Write([]byte("uploaded"))
 			return
 		}
@@ -111,8 +111,14 @@ func TestUploadAndDownload(t *testing.T) {
 	if _, err := client.UploadFile(context.Background(), server.URL+"/upload", "file", src, map[string]string{"kind": "text"}); err != nil {
 		t.Fatalf("UploadFile failed: %v", err)
 	}
-	if uploaded != "hello" {
+	if len(uploaded) != 1 || uploaded[0] != "hello" {
 		t.Fatalf("uploaded = %q, want hello", uploaded)
+	}
+	if _, err := client.UploadBytes(context.Background(), server.URL+"/upload", "file", "memory.txt", []byte("memory"), map[string]string{"kind": "text"}); err != nil {
+		t.Fatalf("UploadBytes failed: %v", err)
+	}
+	if len(uploaded) != 2 || uploaded[1] != "memory" {
+		t.Fatalf("uploaded = %q, want hello and memory", uploaded)
 	}
 
 	dst := filepath.Join(t.TempDir(), "out.txt")
