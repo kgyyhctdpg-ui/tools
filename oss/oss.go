@@ -3,7 +3,22 @@ package oss
 import (
 	"context"
 	"fmt"
+
+	"github.com/scoming-dev/tools/oss/aliyunx"
+	"github.com/scoming-dev/tools/oss/huaweix"
+	"github.com/scoming-dev/tools/oss/miniox"
 )
+
+type MinioConfig = miniox.Config
+type MinioClient = miniox.Client
+
+type AliyunOSSConfig = aliyunx.Config
+type AliyunOSSClient = aliyunx.Client
+type PostPolicy = aliyunx.PostPolicy
+type PolicyToken = aliyunx.PolicyToken
+
+type HuaweiOBSConfig = huaweix.Config
+type HuaweiOBSClient = huaweix.Client
 
 type OssConfig struct {
 	Type   string
@@ -42,4 +57,19 @@ func NewOSSClient(config OssConfig) (OSSClient, error) {
 	default:
 		return nil, fmt.Errorf("unsupported OSS type: %s", config.Type)
 	}
+}
+
+// NewMinioClient 创建MinIO客户端。
+func NewMinioClient(config MinioConfig) (*MinioClient, error) {
+	return miniox.NewClient(config)
+}
+
+// NewAliyunOSSClient 创建阿里云OSS客户端。
+func NewAliyunOSSClient(config AliyunOSSConfig) (*AliyunOSSClient, error) {
+	return aliyunx.NewClient(config)
+}
+
+// NewHuaweiOBSClient 创建华为云OBS客户端。
+func NewHuaweiOBSClient(config HuaweiOBSConfig) (*HuaweiOBSClient, error) {
+	return huaweix.NewClient(config)
 }

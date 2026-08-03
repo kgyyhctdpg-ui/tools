@@ -1,4 +1,4 @@
-package oss
+package aliyunx
 
 import (
 	"context"
@@ -18,14 +18,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/scoming-dev/tools/uniqueid"
-
-	"github.com/aliyun/alibabacloud-oss-go-sdk-v2/oss"
+	aliyunoss "github.com/aliyun/alibabacloud-oss-go-sdk-v2/oss"
 	"github.com/aliyun/alibabacloud-oss-go-sdk-v2/oss/credentials"
+	"github.com/scoming-dev/tools/oss/internal/common"
 )
 
-// AliyunOSSConfig 阿里云OSS配置
-type AliyunOSSConfig struct {
+// Config 阿里云OSS配置
+type Config struct {
 	Endpoint        string
 	AccessKeyID     string
 	SecretAccessKey string
@@ -33,9 +32,9 @@ type AliyunOSSConfig struct {
 	Region          string
 }
 
-// AliyunOSSClient 阿里云OSS客户端
-type AliyunOSSClient struct {
-	client          *oss.Client
+// Client 阿里云OSS客户端
+type Client struct {
+	client          *aliyunoss.Client
 	bucketName      string
 	endpoint        string
 	accessKeyID     string
@@ -44,22 +43,22 @@ type AliyunOSSClient struct {
 	product         string
 }
 
-// NewAliyunOSSClient 创建阿里云OSS客户端
-func NewAliyunOSSClient(config AliyunOSSConfig) (*AliyunOSSClient, error) {
+// NewClient 创建阿里云OSS客户端
+func NewClient(config Config) (*Client, error) {
 	// 创建OSS配置
 	credentialsProvider := credentials.NewStaticCredentialsProvider(
 		config.AccessKeyID,
 		config.SecretAccessKey,
 	)
-	cfg := oss.LoadDefaultConfig().
+	cfg := aliyunoss.LoadDefaultConfig().
 		WithCredentialsProvider(credentialsProvider).
 		WithEndpoint(config.Endpoint).
 		WithRegion(config.Region)
 
 	// 创建OSS客户端
-	client := oss.NewClient(cfg)
+	client := aliyunoss.NewClient(cfg)
 
-	return &AliyunOSSClient{
+	return &Client{
 		client:          client,
 		bucketName:      config.BucketName,
 		endpoint:        config.Endpoint,
@@ -70,7 +69,7 @@ func NewAliyunOSSClient(config AliyunOSSConfig) (*AliyunOSSClient, error) {
 	}, nil
 }
 
-func (a *AliyunOSSClient) GetPreFileName(suffix string) string {
+func (a *Client) GetPreFileName(suffix string) string {
 	filePrev := "file"
 	if suffix == "" {
 		filePrev = "file"
@@ -89,7 +88,7 @@ func (a *AliyunOSSClient) GetPreFileName(suffix string) string {
 }
 
 // UploadFile 上传文件到阿里云OSS
-func (a *AliyunOSSClient) UploadFile(ctx context.Context, localFilePath, objectName string) (string, error) {
+func (a *Client) UploadFile(ctx context.Context, localFilePath, objectName string) (string, error) {
 	// 打开本地文件
 	file, err := os.Open(localFilePath)
 	if err != nil {
@@ -104,7 +103,7 @@ func (a *AliyunOSSClient) UploadFile(ctx context.Context, localFilePath, objectN
 	}
 
 	// 上传文件到OSS
-	_, err = a.client.PutObject(ctx, &oss.PutObjectRequest{
+	_, err = a.client.PutObject(ctx, &aliyunoss.PutObjectRequest{
 		Bucket:      &a.bucketName,
 		Key:         &objectName,
 		Body:        file,
@@ -119,7 +118,7 @@ func (a *AliyunOSSClient) UploadFile(ctx context.Context, localFilePath, objectN
 	return url, nil
 }
 
-// GeneratePostPolicy 生成POST策略
+// PostPolicy 生成POST策略
 type PostPolicy struct {
 	Expiration string          `json:"expiration"`
 	Conditions [][]interface{} `json:"conditions"`
@@ -134,7 +133,7 @@ type PolicyToken struct {
 }
 
 // GeneratePostSignature 生成POST签名
-func (a *AliyunOSSClient) GeneratePostSignature(policy string) (string, error) {
+func (a *Client) GeneratePostSignature(policy string) (string, error) {
 	// 使用HMAC-SHA1签名
 	h := hmac.New(sha1.New, []byte(a.secretAccessKey))
 	h.Write([]byte(policy))
@@ -143,9 +142,9 @@ func (a *AliyunOSSClient) GeneratePostSignature(policy string) (string, error) {
 }
 
 // GetUploadParams 获取上传参数（用于预签名URL）
-func (a *AliyunOSSClient) GetUploadParams(suffix string, method string) (uploadUrl string, formData map[string]string, err error) {
+func (a *Client) GetUploadParams(suffix string, method string) (uploadUrl string, formData map[string]string, err error) {
 	filePrev := a.GetPreFileName(suffix)
-	key := uniqueid.GenSn("")
+	key := common.GenSn("")
 	datepath := filePrev
 	filename := key + "." + suffix
 	if suffix == "" {
@@ -155,10 +154,10 @@ func (a *AliyunOSSClient) GetUploadParams(suffix string, method string) (uploadU
 
 	if strings.ToLower(method) == "" || strings.ToLower(method) == "put" {
 		// 生成PUT预签名URL
-		result, err := a.client.Presign(context.Background(), &oss.PutObjectRequest{
+		result, err := a.client.Presign(context.Background(), &aliyunoss.PutObjectRequest{
 			Bucket: &a.bucketName,
 			Key:    &filepath,
-		}, oss.PresignExpires(2*time.Hour))
+		}, aliyunoss.PresignExpires(2*time.Hour))
 		if err != nil {
 			return "", nil, fmt.Errorf("failed to generate presigned put url: %w", err)
 		}
@@ -230,7 +229,7 @@ func (a *AliyunOSSClient) GetUploadParams(suffix string, method string) (uploadU
 }
 
 // UploadFileWithPrefix 上传文件到阿里云OSS，自动生成对象名称
-func (a *AliyunOSSClient) UploadFileWithPrefix(ctx context.Context, localFilePath string, prefix string) (string, string, error) {
+func (a *Client) UploadFileWithPrefix(ctx context.Context, localFilePath string, prefix string) (string, string, error) {
 	// 生成唯一的文件名
 	fileName := filepath.Base(localFilePath)
 	ext := filepath.Ext(fileName)
@@ -258,12 +257,12 @@ func (a *AliyunOSSClient) UploadFileWithPrefix(ctx context.Context, localFilePat
 }
 
 // DeleteLocalFile 删除本地文件
-func (a *AliyunOSSClient) DeleteLocalFile(filePath string) error {
-	return deleteLocalFile(filePath)
+func (a *Client) DeleteLocalFile(filePath string) error {
+	return common.DeleteLocalFile(filePath)
 }
 
 // GeneratePostPolicy 生成POST上传策略
-func (a *AliyunOSSClient) GeneratePostPolicy(suffix string, filepath string, expireTime int64) (map[string]any, error) {
+func (a *Client) GeneratePostPolicy(suffix string, filepath string, expireTime int64) (map[string]any, error) {
 	utcTime := time.Now().UTC()
 	date := utcTime.Format("20060102")
 	expiration := utcTime.Add(1 * time.Hour)

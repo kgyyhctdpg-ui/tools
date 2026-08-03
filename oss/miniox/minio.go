@@ -1,4 +1,4 @@
-package oss
+package miniox
 
 import (
 	"context"
@@ -11,14 +11,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/scoming-dev/tools/uniqueid"
-
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
+	"github.com/scoming-dev/tools/oss/internal/common"
 )
 
-// MinioConfig MinIO配置
-type MinioConfig struct {
+// Config MinIO配置
+type Config struct {
 	Endpoint        string
 	AccessKeyID     string
 	SecretAccessKey string
@@ -26,14 +25,14 @@ type MinioConfig struct {
 	UseSSL          bool
 }
 
-// MinioClient MinIO客户端
-type MinioClient struct {
+// Client MinIO客户端
+type Client struct {
 	client     *minio.Client
 	bucketName string
 }
 
-// NewMinioClient 创建MinIO客户端
-func NewMinioClient(config MinioConfig) (*MinioClient, error) {
+// NewClient 创建MinIO客户端
+func NewClient(config Config) (*Client, error) {
 	client, err := minio.New(config.Endpoint, &minio.Options{
 		Creds:  credentials.NewStaticV4(config.AccessKeyID, config.SecretAccessKey, ""),
 		Secure: config.UseSSL,
@@ -43,13 +42,13 @@ func NewMinioClient(config MinioConfig) (*MinioClient, error) {
 		return nil, fmt.Errorf("failed to create minio client: %w", err)
 	}
 
-	return &MinioClient{
+	return &Client{
 		client:     client,
 		bucketName: config.BucketName,
 	}, nil
 }
 
-func (m *MinioClient) GetPreFileName(suffix string) string {
+func (m *Client) GetPreFileName(suffix string) string {
 	filePrev := "file"
 	if suffix == "" {
 		filePrev = "file"
@@ -68,7 +67,7 @@ func (m *MinioClient) GetPreFileName(suffix string) string {
 }
 
 // UploadFile 上传文件到MinIO
-func (m *MinioClient) UploadFile(ctx context.Context, localFilePath, objectName string) (string, error) {
+func (m *Client) UploadFile(ctx context.Context, localFilePath, objectName string) (string, error) {
 	// 打开本地文件
 	file, err := os.Open(localFilePath)
 	if err != nil {
@@ -101,10 +100,9 @@ func (m *MinioClient) UploadFile(ctx context.Context, localFilePath, objectName 
 	return url, nil
 }
 
-func (m *MinioClient) GetUploadParams(suffix string, method string) (uploadUrl string, formData map[string]string, err error) {
-
+func (m *Client) GetUploadParams(suffix string, method string) (uploadUrl string, formData map[string]string, err error) {
 	filePrev := m.GetPreFileName(suffix)
-	key := uniqueid.GenSn("")
+	key := common.GenSn("")
 	datepath := filePrev
 	filename := key + "." + suffix
 	if suffix == "" {
@@ -135,7 +133,7 @@ func (m *MinioClient) GetUploadParams(suffix string, method string) (uploadUrl s
 }
 
 // UploadFileWithPrefix 上传文件到MinIO，自动生成对象名称
-func (m *MinioClient) UploadFileWithPrefix(ctx context.Context, localFilePath string, prefix string) (string, string, error) {
+func (m *Client) UploadFileWithPrefix(ctx context.Context, localFilePath string, prefix string) (string, string, error) {
 	// 生成唯一的文件名
 	fileName := filepath.Base(localFilePath)
 	ext := filepath.Ext(fileName)
@@ -163,6 +161,6 @@ func (m *MinioClient) UploadFileWithPrefix(ctx context.Context, localFilePath st
 }
 
 // DeleteLocalFile 删除本地文件
-func (m *MinioClient) DeleteLocalFile(filePath string) error {
-	return deleteLocalFile(filePath)
+func (m *Client) DeleteLocalFile(filePath string) error {
+	return common.DeleteLocalFile(filePath)
 }

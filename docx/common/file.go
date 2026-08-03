@@ -5,13 +5,14 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
-
-	"github.com/scoming-dev/tools/filex"
+	"time"
 )
 
 // PrepareFilepath returns a local file path, downloading and caching HTTP(S) URLs when needed.
@@ -44,7 +45,7 @@ func PrepareFilepath(filepathOrURL string) (string, bool, error) {
 		return finalPath, false, nil
 	}
 
-	tempFile, err := filex.Download(context.Background(), filepathOrURL)
+	tempFile, err := downloadTempFile(context.Background(), filepathOrURL)
 	if err != nil {
 		return "", false, fmt.Errorf("下载文件失败: %w", err)
 	}
@@ -60,4 +61,39 @@ func PrepareFilepath(filepathOrURL string) (string, bool, error) {
 	}
 
 	return finalPath, true, nil
+}
+
+func downloadTempFile(ctx context.Context, rawURL string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return "", err
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return "", err
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		return "", fmt.Errorf("download failed with status %s", response.Status)
+	}
+
+	file, err := os.CreateTemp("", "download-*")
+	if err != nil {
+		return "", err
+	}
+	path := file.Name()
+	if _, err := io.Copy(file, response.Body); err != nil {
+		file.Close()
+		_ = os.Remove(path)
+		return "", err
+	}
+	if err := file.Close(); err != nil {
+		_ = os.Remove(path)
+		return "", err
+	}
+	return path, nil
 }

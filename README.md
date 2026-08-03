@@ -1,6 +1,6 @@
 # tools
 
-`github.com/scoming-dev/tools` 是一组 Go 业务工具包，当前包含 DOCX 生成、文档转 Markdown、对象存储、验证码、OnlyOffice 配置、HTTP 请求、缓存抽象、文件工具、JSON、字符串、网络、业务校验、图片处理、加密签名、Excel、金额、短信、唯一 ID 和 Casbin RBAC。
+`github.com/scoming-dev/tools` 是一组 Go 业务工具包，当前包含 DOCX 生成、文档转 Markdown、对象存储、验证码、OnlyOffice 配置、HTTP 请求、认证授权、OAuth、权限码、缓存抽象、文件工具、JSON、字符串、网络、业务校验、图片处理、加密签名、Excel、金额、短信、唯一 ID 和 Casbin RBAC。
 
 ## 环境要求
 
@@ -25,9 +25,14 @@ go test ./...
 | --- | --- |
 | `docx` | Markdown 转 DOCX，支持标题、目录、列表、表格、图片、SVG、原生 Office/WPS 公式和可扩展插件。 |
 | `markdown` | DOCX、XLSX、PPTX、PDF、EPUB、HTML、邮件、压缩包、图片和文本格式转 Markdown。 |
-| `oss` | 统一对象存储接口，支持 MinIO、阿里云 OSS、华为 OBS。 |
+| `oss` | 统一对象存储兼容入口，保留 MinIO、阿里云 OSS、华为 OBS 旧调用方式。 |
+| `oss/miniox` | 独立 MinIO 适配，不引入其他云厂商 SDK。 |
+| `oss/aliyunx` | 独立阿里云 OSS 适配，不引入 MinIO 或华为 OBS SDK。 |
+| `oss/huaweix` | 独立华为 OBS 适配，不引入 MinIO 或阿里云 OSS SDK。 |
 | `captcha` | 点击、滑块、旋转验证码生成和缓存校验。 |
 | `onlyoffice` | OnlyOffice 文档类型识别、JWT、文档配置构建。 |
+| `authx` | 密码哈希、Bearer 解析、JWT、API Key、HTTP 鉴权中间件、Refresh Token 和基于缓存的 Session 管理。 |
+| `oauthx` | OAuth2 授权 URL、PKCE、state 防重放、授权码/刷新 token、常见 provider 预设和用户信息获取。 |
 | `cache` | 通用缓存接口和并发安全的内存实现，支持 TTL、SetNX、Remember。 |
 | `filex` | 文件判断、大小格式化、MIME、hash、base64、HTTP 下载和本地路径准备。 |
 | `jsonx` | JSON 编码/解码、压缩、美化、合法性判断、深拷贝、map 转换和点路径读写。 |
@@ -41,7 +46,9 @@ go test ./...
 | `money` | 基于 decimal 的金额加减乘除、格式化、元分转换、人民币大写。 |
 | `sms` | 聚合短信接口，内置阿里云、腾讯云、云片、Submail、聚合数据、螺丝帽、创蓝和通用 HTTP 适配。 |
 | `uniqueid` | 业务单号和 Sonyflake ID 生成。 |
-| `casbinx` | 基于 GORM 的 Casbin RBAC 初始化工具。 |
+| `permissionx` | resource:action 权限码生成、解析、通配符匹配、批量判断和去重。 |
+| `casbinx` | Casbin RBAC/租户域 RBAC 模型构建和常用权限操作封装，不默认绑定数据库。 |
+| `casbinx/gormx` | 基于 GORM Adapter 的 Casbin 策略持久化初始化；数据库驱动由业务项目自行导入。 |
 
 ## Markdown 转换快速示例
 

@@ -1,12 +1,15 @@
 package markdown
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"path"
@@ -16,8 +19,6 @@ import (
 	"strings"
 	"time"
 	"unicode"
-
-	"github.com/scoming-dev/tools/httpx"
 )
 
 const (
@@ -53,7 +54,8 @@ type minerUClient struct {
 	formula     bool
 	table       bool
 	timeout     time.Duration
-	http        *httpx.Client
+	maxBodySize int64
+	http        *http.Client
 }
 
 type minerUResponse struct {
@@ -143,10 +145,8 @@ func newMinerUClient(config MinerUConfig) (*minerUClient, error) {
 		formula:     !config.DisableFormula,
 		table:       !config.DisableTable,
 		timeout:     timeout,
-		http: httpx.New(
-			httpx.WithHTTPClient(config.HTTPClient),
-			httpx.WithMaxBodySize(maxResponseSize),
-		),
+		maxBodySize: maxResponseSize,
+		http:        httpClientOrDefault(config.HTTPClient),
 	}, nil
 }
 
@@ -173,16 +173,12 @@ func (client *minerUClient) convert(ctx context.Context, data []byte, info Strea
 		"return_content_list": "false",
 		"return_images":       "true",
 	}
-	requestOptions := make([]httpx.RequestOption, 0, 1)
-	if client.token != "" {
-		requestOptions = append(requestOptions, httpx.WithRequestHeader("Authorization", "Bearer "+client.token))
-	}
-	response, err := client.http.UploadBytes(ctx, client.endpoint, "files", name, data, fields, requestOptions...)
+	response, err := client.upload(ctx, name, data, fields)
 	if err != nil {
 		return nil, fmt.Errorf("markdown: MinerU request failed: %w", err)
 	}
 	var payload minerUResponse
-	if err := httpx.DecodeJSON(response, &payload); err != nil {
+	if err := json.Unmarshal(response, &payload); err != nil {
 		return nil, fmt.Errorf("markdown: decode MinerU response: %w", err)
 	}
 	document, err := selectMinerUDocument(payload, name)
@@ -206,6 +202,65 @@ func (client *minerUClient) convert(ctx context.Context, data []byte, info Strea
 		Markdown: markdown,
 		Metadata: metadata,
 	}, nil
+}
+
+func (client *minerUClient) upload(ctx context.Context, name string, data []byte, fields map[string]string) ([]byte, error) {
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
+	for key, value := range fields {
+		if err := writer.WriteField(key, value); err != nil {
+			return nil, err
+		}
+	}
+	part, err := writer.CreateFormFile("files", name)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := part.Write(data); err != nil {
+		return nil, err
+	}
+	if err := writer.Close(); err != nil {
+		return nil, err
+	}
+
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, client.endpoint, &buf)
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	request.Header.Set("Accept", "application/json")
+	if client.token != "" {
+		request.Header.Set("Authorization", "Bearer "+client.token)
+	}
+
+	response, err := client.http.Do(request)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+
+	reader := response.Body
+	if client.maxBodySize > 0 {
+		reader = io.NopCloser(io.LimitReader(response.Body, client.maxBodySize+1))
+	}
+	body, err := io.ReadAll(reader)
+	if err != nil {
+		return nil, err
+	}
+	if client.maxBodySize > 0 && int64(len(body)) > client.maxBodySize {
+		return nil, fmt.Errorf("response body exceeds %d bytes", client.maxBodySize)
+	}
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		return nil, fmt.Errorf("status %s: %s", response.Status, strings.TrimSpace(string(body)))
+	}
+	return body, nil
+}
+
+func httpClientOrDefault(client *http.Client) *http.Client {
+	if client != nil {
+		return client
+	}
+	return http.DefaultClient
 }
 
 func selectMinerUDocument(payload minerUResponse, name string) (minerUDocument, error) {

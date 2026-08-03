@@ -5,8 +5,6 @@ import (
 	"log"
 	"os"
 
-	docxcommon "github.com/scoming-dev/tools/docx/common"
-
 	"github.com/88250/lute/ast"
 	"github.com/88250/lute/parse"
 	"github.com/88250/lute/render"
@@ -425,7 +423,7 @@ func (r *DocxRenderer) renderLink(node *ast.Node, entering bool) ast.WalkStatus 
 func (r *DocxRenderer) renderHTML(node *ast.Node, entering bool) ast.WalkStatus {
 	if entering {
 		content := string(node.Tokens)
-		nodeType := docxcommon.GetNodeValue(content, "s-tag", "type")
+		nodeType := getNodeValue(content, "s-tag", "type")
 		if plugin := r.htmlBlockPlugins[nodeType]; plugin != nil {
 			if err := plugin.RenderHTML(r, content); err != nil {
 				log.Printf("渲染 HTML 插件 %q 失败: %v", nodeType, err)

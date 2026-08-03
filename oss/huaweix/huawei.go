@@ -1,4 +1,4 @@
-package oss
+package huaweix
 
 import (
 	"context"
@@ -11,13 +11,12 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/scoming-dev/tools/uniqueid"
-
 	obs "github.com/huaweicloud/huaweicloud-sdk-go-obs/obs"
+	"github.com/scoming-dev/tools/oss/internal/common"
 )
 
-// HuaweiOBSConfig 华为云OBS配置
-type HuaweiOBSConfig struct {
+// Config 华为云OBS配置
+type Config struct {
 	Endpoint        string
 	AccessKeyID     string
 	SecretAccessKey string
@@ -25,8 +24,8 @@ type HuaweiOBSConfig struct {
 	Region          string
 }
 
-// HuaweiOBSClient 华为云OBS客户端
-type HuaweiOBSClient struct {
+// Client 华为云OBS客户端
+type Client struct {
 	client          *obs.ObsClient
 	endpoint        string
 	accessKeyID     string
@@ -34,8 +33,8 @@ type HuaweiOBSClient struct {
 	bucketName      string
 }
 
-// NewHuaweiOBSClient 创建华为云OBS客户端
-func NewHuaweiOBSClient(config HuaweiOBSConfig) (*HuaweiOBSClient, error) {
+// NewClient 创建华为云OBS客户端
+func NewClient(config Config) (*Client, error) {
 	if config.Endpoint == "" || config.AccessKeyID == "" || config.SecretAccessKey == "" || config.BucketName == "" {
 		return nil, fmt.Errorf("invalid huawei obs config")
 	}
@@ -45,7 +44,7 @@ func NewHuaweiOBSClient(config HuaweiOBSConfig) (*HuaweiOBSClient, error) {
 		return nil, fmt.Errorf("failed to create huawei obs client: %w", err)
 	}
 
-	return &HuaweiOBSClient{
+	return &Client{
 		client:          client,
 		endpoint:        config.Endpoint,
 		accessKeyID:     config.AccessKeyID,
@@ -55,7 +54,7 @@ func NewHuaweiOBSClient(config HuaweiOBSConfig) (*HuaweiOBSClient, error) {
 }
 
 // GetPreFileName 根据文件后缀获取文件前缀
-func (h *HuaweiOBSClient) GetPreFileName(suffix string) string {
+func (h *Client) GetPreFileName(suffix string) string {
 	filePrev := "file"
 	if suffix == "" {
 		filePrev = "file"
@@ -74,7 +73,7 @@ func (h *HuaweiOBSClient) GetPreFileName(suffix string) string {
 }
 
 // UploadFile 上传文件到华为云OBS
-func (h *HuaweiOBSClient) UploadFile(ctx context.Context, localFilePath, objectName string) (string, error) {
+func (h *Client) UploadFile(ctx context.Context, localFilePath, objectName string) (string, error) {
 	// 打开本地文件
 	file, err := os.Open(localFilePath)
 	if err != nil {
@@ -135,10 +134,10 @@ func (h *HuaweiOBSClient) UploadFile(ctx context.Context, localFilePath, objectN
 }
 
 // GetUploadParams 获取上传参数（用于预签名URL或表单上传）
-func (h *HuaweiOBSClient) GetUploadParams(suffix string, method string) (uploadUrl string, formData map[string]string, err error) {
+func (h *Client) GetUploadParams(suffix string, method string) (uploadUrl string, formData map[string]string, err error) {
 	// 生成文件名
 	filePrev := h.GetPreFileName(suffix)
-	uuid := uniqueid.GenStrId()
+	uuid := common.GenNumericID()
 
 	objectName := fmt.Sprintf("%s/%s.%s", filePrev, uuid, suffix)
 	if suffix == "" {
@@ -187,7 +186,7 @@ func (h *HuaweiOBSClient) GetUploadParams(suffix string, method string) (uploadU
 }
 
 // UploadFileWithPrefix 上传文件到OSS，自动生成对象名称
-func (h *HuaweiOBSClient) UploadFileWithPrefix(ctx context.Context, localFilePath string, prefix string) (string, string, error) {
+func (h *Client) UploadFileWithPrefix(ctx context.Context, localFilePath string, prefix string) (string, string, error) {
 	// 生成唯一的文件名
 	fileName := filepath.Base(localFilePath)
 	ext := filepath.Ext(fileName)
@@ -215,6 +214,6 @@ func (h *HuaweiOBSClient) UploadFileWithPrefix(ctx context.Context, localFilePat
 }
 
 // DeleteLocalFile 删除本地文件
-func (h *HuaweiOBSClient) DeleteLocalFile(filePath string) error {
-	return deleteLocalFile(filePath)
+func (h *Client) DeleteLocalFile(filePath string) error {
+	return common.DeleteLocalFile(filePath)
 }

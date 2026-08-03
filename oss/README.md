@@ -183,4 +183,4 @@ type AliyunOSSConfig struct {
 
 - `github.com/minio/minio-go/v7` - MinIO客户端
 - `github.com/aliyun/alibabacloud-oss-go-sdk-v2` - 阿里云OSS客户端
-- `github.com/scoming-dev/tools/uniqueid` - 唯一ID生成
+- `github.com/huaweicloud/huaweicloud-sdk-go-obs/obs` - 华为云OBS客户端

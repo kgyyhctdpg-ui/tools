@@ -11,8 +11,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/golang-jwt/jwt/v4"
 )
 
 // DocumentType 文档类型
@@ -47,74 +45,33 @@ func GetFileType(fileName string) string {
 
 // GenerateToken 生成OnlyOffice JWT token
 func GenerateToken(payload map[string]interface{}, secret string) (string, error) {
-	claims := jwt.MapClaims{}
-	for k, v := range payload {
-		claims[k] = v
-	}
-
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return token.SignedString([]byte(secret))
+	return signJWT(payload, secret)
 }
 
 // VerifyToken 验证OnlyOffice JWT token
 func VerifyToken(tokenString, secret string) (map[string]interface{}, error) {
-	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
-		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-		}
-		return []byte(secret), nil
-	})
-
-	if err != nil {
-		return nil, err
-	}
-
-	if claims, ok := token.Claims.(jwt.MapClaims); ok && token.Valid {
-		result := make(map[string]interface{})
-		for k, v := range claims {
-			result[k] = v
-		}
-		return result, nil
-	}
-
-	return nil, fmt.Errorf("invalid token")
+	return verifyJWT(tokenString, secret)
 }
 
 // GenerateDocumentAccessToken 生成文档访问token（只包含文档ID，不包含真实URL）
 // 真实文件URL存储在Redis中，避免在token中暴露
 // 返回的token只包含文档ID，即使token被解密也无法获取真实文件URL
 func GenerateDocumentAccessToken(documentId string, secret string, expiresIn time.Duration) (string, error) {
-	payload := jwt.MapClaims{
+	payload := map[string]interface{}{
 		"documentId": documentId, // 只存储文档ID，不存储真实URL
 		"exp":        time.Now().Add(expiresIn).Unix(),
 		"iat":        time.Now().Unix(),
 	}
 
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, payload)
-	return token.SignedString([]byte(secret))
+	return signJWT(payload, secret)
 }
 
 // VerifyDocumentAccessToken 验证并解析文档访问token，只返回文档ID
 // 真实文件URL需要从Redis中获取
 func VerifyDocumentAccessToken(tokenString, secret string) (documentId string, err error) {
-	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
-		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-		}
-		return []byte(secret), nil
-	})
-
+	claims, err := verifyJWT(tokenString, secret)
 	if err != nil {
 		return "", fmt.Errorf("failed to parse token: %w", err)
-	}
-
-	if !token.Valid {
-		return "", fmt.Errorf("invalid token")
-	}
-
-	claims, ok := token.Claims.(jwt.MapClaims)
-	if !ok {
-		return "", fmt.Errorf("invalid token claims")
 	}
 
 	documentId, _ = claims["documentId"].(string)
@@ -124,6 +81,97 @@ func VerifyDocumentAccessToken(tokenString, secret string) (documentId string, e
 	}
 
 	return documentId, nil
+}
+
+func signJWT(payload map[string]interface{}, secret string) (string, error) {
+	header := map[string]string{
+		"alg": "HS256",
+		"typ": "JWT",
+	}
+	headerData, err := json.Marshal(header)
+	if err != nil {
+		return "", err
+	}
+	payloadData, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+
+	encodedHeader := base64.RawURLEncoding.EncodeToString(headerData)
+	encodedPayload := base64.RawURLEncoding.EncodeToString(payloadData)
+	signingInput := encodedHeader + "." + encodedPayload
+	signature := hmacSHA256URL(signingInput, secret)
+	return signingInput + "." + signature, nil
+}
+
+func verifyJWT(tokenString, secret string) (map[string]interface{}, error) {
+	parts := strings.Split(tokenString, ".")
+	if len(parts) != 3 {
+		return nil, fmt.Errorf("invalid token")
+	}
+
+	headerData, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		return nil, err
+	}
+	var header map[string]interface{}
+	if err := json.Unmarshal(headerData, &header); err != nil {
+		return nil, err
+	}
+	if header["alg"] != "HS256" {
+		return nil, fmt.Errorf("unexpected signing method: %v", header["alg"])
+	}
+
+	signingInput := parts[0] + "." + parts[1]
+	expectedSignature := hmacSHA256URL(signingInput, secret)
+	if !hmac.Equal([]byte(parts[2]), []byte(expectedSignature)) {
+		return nil, fmt.Errorf("invalid token")
+	}
+
+	payloadData, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return nil, err
+	}
+	var claims map[string]interface{}
+	if err := json.Unmarshal(payloadData, &claims); err != nil {
+		return nil, err
+	}
+	if err := validateJWTClaims(claims, time.Now()); err != nil {
+		return nil, err
+	}
+	return claims, nil
+}
+
+func hmacSHA256URL(data, secret string) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(data))
+	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+}
+
+func validateJWTClaims(claims map[string]interface{}, now time.Time) error {
+	if exp, ok := numericClaim(claims["exp"]); ok && now.After(time.Unix(exp, 0)) {
+		return fmt.Errorf("token is expired")
+	}
+	if nbf, ok := numericClaim(claims["nbf"]); ok && now.Before(time.Unix(nbf, 0)) {
+		return fmt.Errorf("token is not valid yet")
+	}
+	return nil
+}
+
+func numericClaim(value interface{}) (int64, bool) {
+	switch typed := value.(type) {
+	case float64:
+		return int64(typed), true
+	case int64:
+		return typed, true
+	case int:
+		return int64(typed), true
+	case json.Number:
+		number, err := typed.Int64()
+		return number, err == nil
+	default:
+		return 0, false
+	}
 }
 
 // GetDocumentUrlKey 获取Redis中存储文档URL的key
