@@ -22,6 +22,92 @@ const docxDocumentPrefix = `<?xml version="1.0" encoding="UTF-8" standalone="yes
 
 const docxDocumentSuffix = `</w:body></w:document>`
 
+func TestNewCoreStartsWithoutBuiltins(t *testing.T) {
+	engine := NewCore()
+	if extensions := engine.SupportedExtensions(); len(extensions) != 0 {
+		t.Fatalf("NewCore should not register built-ins, got %v", extensions)
+	}
+}
+
+func TestNewCoreRegistersConverterGroupsIndependently(t *testing.T) {
+	engine := NewCore(WithTextConverters())
+	extensions := make(map[string]bool)
+	for _, extension := range engine.SupportedExtensions() {
+		extensions[extension] = true
+	}
+	for _, extension := range []string{".txt", ".html", ".csv", ".json", ".xml"} {
+		if !extensions[extension] {
+			t.Fatalf("text converter group is missing %s: %v", extension, extensions)
+		}
+	}
+	for _, extension := range []string{".docx", ".xlsx", ".pptx", ".pdf", ".zip", ".png"} {
+		if extensions[extension] {
+			t.Fatalf("text converter group unexpectedly registered %s", extension)
+		}
+	}
+
+	result, err := engine.ConvertReader(
+		context.Background(),
+		strings.NewReader("Name,Value\nA,1"),
+		StreamInfo{Name: "data.csv"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result.Markdown, "<table>") {
+		t.Fatalf("registered CSV converter was not used:\n%s", result.Markdown)
+	}
+}
+
+func TestRegisterBuiltinsIsIdempotent(t *testing.T) {
+	engine := NewCore()
+	engine.RegisterTextConverters()
+	engine.RegisterTextConverters()
+	engine.RegisterBuiltins()
+	count := len(engine.converters)
+	engine.RegisterBuiltins()
+	if len(engine.converters) != count {
+		t.Fatalf("built-in registration should be idempotent: before=%d after=%d", count, len(engine.converters))
+	}
+	if got, want := count, 12; got != want {
+		t.Fatalf("unexpected built-in converter count: got %d want %d", got, want)
+	}
+}
+
+func TestNewCoreCustomConverterKeepsPriorityWhenBuiltinsAdded(t *testing.T) {
+	custom := newExtensionConverter(
+		[]string{".txt"},
+		nil,
+		func(context.Context, []byte, StreamInfo) (*Result, error) {
+			return &Result{Markdown: "custom"}, nil
+		},
+	)
+	engine := NewCore(WithConverter(custom), WithBuiltins())
+	result, err := engine.ConvertReader(
+		context.Background(),
+		strings.NewReader("original"),
+		StreamInfo{Name: "note.txt"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Markdown != "custom" {
+		t.Fatalf("custom converter lost priority: %q", result.Markdown)
+	}
+}
+
+func TestNewStillRegistersAllBuiltins(t *testing.T) {
+	extensions := make(map[string]bool)
+	for _, extension := range New().SupportedExtensions() {
+		extensions[extension] = true
+	}
+	for _, extension := range []string{".txt", ".docx", ".xlsx", ".pptx", ".epub", ".eml", ".zip", ".png", ".pdf"} {
+		if !extensions[extension] {
+			t.Fatalf("New no longer registers %s", extension)
+		}
+	}
+}
+
 func TestDOCXConvertsInlineAndBlockOMML(t *testing.T) {
 	document := docxDocumentPrefix + `
 <w:p><w:r><w:t>Inline </w:t></w:r><m:oMath><m:f><m:num><m:r><m:t>a</m:t></m:r></m:num><m:den><m:r><m:t>b</m:t></m:r></m:den></m:f></m:oMath><w:r><w:t> formula</w:t></w:r></w:p>

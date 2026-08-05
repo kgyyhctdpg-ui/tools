@@ -75,6 +75,17 @@ func main() {
 }
 ```
 
+`markdown.New()` 会继续启用全部内置格式，兼容原有行为。只需要部分格式时，可以使用轻量构造器按组启用转换器：
+
+```go
+converter := markdown.NewCore(
+	markdown.WithTextConverters(),
+	markdown.WithOfficeConverters(),
+)
+```
+
+可选分组包括 `WithTextConverters`、`WithOfficeConverters`、`WithArchiveConverters`、`WithImageConverter` 和 `WithPDFConverter`。也可以在创建后调用对应的 `Register...` 方法；重复注册不会产生重复转换器。`NewEmpty` 是 `NewCore` 的别名，`NewWithBuiltins` 是 `New` 的显式别名。
+
 DOCX 转换会将原生 OMML 公式输出为行内 `$...$` 或块级 `$$...$$` LaTeX。`WithAssetsDirectory` 会把 DrawingML、VML、SVG 和 MathType/OLE 预览图保存到独立目录，Markdown 中只保留相对文件链接；需要上传对象存储时，也可以通过 `WithImageHandler` 返回最终 URL：
 
 ```go

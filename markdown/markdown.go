@@ -98,11 +98,12 @@ type Option func(*MarkItDown)
 type MarkItDown struct {
 	mu sync.RWMutex
 
-	converters   []Converter
-	httpClient   *http.Client
-	imageHandler ImageHandler
-	pdfHandler   PDFHandler
-	tableFormat  TableFormat
+	converters       []Converter
+	registeredGroups builtinGroup
+	httpClient       *http.Client
+	imageHandler     ImageHandler
+	pdfHandler       PDFHandler
+	tableFormat      TableFormat
 
 	maxInputSize       int64
 	maxArchiveFileSize int64
@@ -110,7 +111,30 @@ type MarkItDown struct {
 	maxArchiveDepth    int
 }
 
+// New creates an engine with all built-in converters. This preserves the
+// package's original behavior.
 func New(options ...Option) *MarkItDown {
+	return newMarkItDown(true, options...)
+}
+
+// NewCore creates an engine without built-in converters. Call one of the
+// Register methods or pass converter group options to enable only the formats
+// the application needs.
+func NewCore(options ...Option) *MarkItDown {
+	return newMarkItDown(false, options...)
+}
+
+// NewEmpty is an alias for NewCore.
+func NewEmpty(options ...Option) *MarkItDown {
+	return NewCore(options...)
+}
+
+// NewWithBuiltins is an explicit alias for New.
+func NewWithBuiltins(options ...Option) *MarkItDown {
+	return New(options...)
+}
+
+func newMarkItDown(registerBuiltins bool, options ...Option) *MarkItDown {
 	engine := &MarkItDown{
 		httpClient:         http.DefaultClient,
 		imageHandler:       DataURIImageHandler,
@@ -120,7 +144,9 @@ func New(options ...Option) *MarkItDown {
 		maxArchiveFiles:    defaultMaxArchiveFiles,
 		maxArchiveDepth:    defaultMaxArchiveDepth,
 	}
-	engine.registerBuiltins()
+	if registerBuiltins {
+		engine.RegisterBuiltins()
+	}
 	for _, option := range options {
 		if option != nil {
 			option(engine)
