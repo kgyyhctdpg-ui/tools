@@ -119,14 +119,23 @@ func TestAssetsFolderUsesInputFileNameMD5(t *testing.T) {
 
 func TestRunUsesSelfHostedMinerU(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/file_parse" || request.FormValue("return_md") != "true" {
-			t.Fatalf("unexpected MinerU request: path=%q return_md=%q", request.URL.Path, request.FormValue("return_md"))
+		switch {
+		case request.Method == http.MethodPost && request.URL.Path == "/tasks":
+			if request.FormValue("return_md") != "true" {
+				t.Fatalf("unexpected MinerU submission: path=%q return_md=%q", request.URL.Path, request.FormValue("return_md"))
+			}
+			_ = json.NewEncoder(writer).Encode(map[string]any{"task_id": "task-1", "status": "pending"})
+		case request.Method == http.MethodGet && request.URL.Path == "/tasks/task-1":
+			_ = json.NewEncoder(writer).Encode(map[string]any{"task_id": "task-1", "status": "completed"})
+		case request.Method == http.MethodGet && request.URL.Path == "/tasks/task-1/result":
+			_ = json.NewEncoder(writer).Encode(map[string]any{
+				"results": map[string]any{
+					"input": map[string]any{"md_content": "# Parsed by MinerU"},
+				},
+			})
+		default:
+			t.Fatalf("unexpected MinerU request: %s %s", request.Method, request.URL.Path)
 		}
-		_ = json.NewEncoder(writer).Encode(map[string]any{
-			"results": map[string]any{
-				"input": map[string]any{"md_content": "# Parsed by MinerU"},
-			},
-		})
 	}))
 	defer server.Close()
 
@@ -142,6 +151,7 @@ func TestRunUsesSelfHostedMinerU(t *testing.T) {
 		"-i", input,
 		"-o", output,
 		"--mineru-url", server.URL,
+		"--mineru-poll-interval", "1ms",
 	}, strings.NewReader(""), &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("unexpected exit code %d: %s", code, stderr.String())

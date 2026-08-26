@@ -33,12 +33,13 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	mimeType := flags.String("mime-type", "", "source MIME type when reading stdin")
 	listFormats := flags.Bool("formats", false, "list supported file extensions")
 	minerUURL := flags.String("mineru-url", "", "self-hosted MinerU server URL")
-	minerUEndpoint := flags.String("mineru-endpoint", "/file_parse", "MinerU file parsing endpoint")
+	minerUEndpoint := flags.String("mineru-endpoint", "/tasks", "MinerU async task submission endpoint")
 	minerUToken := flags.String("mineru-token", "", "optional MinerU bearer token")
 	minerUBackend := flags.String("mineru-backend", "pipeline", "MinerU parsing backend")
 	minerUParseMethod := flags.String("mineru-parse-method", "auto", "MinerU parse method")
 	minerULanguage := flags.String("mineru-language", "ch", "MinerU document language")
 	minerUTimeout := flags.Duration("mineru-timeout", 20*time.Minute, "MinerU request timeout")
+	minerUPollInterval := flags.Duration("mineru-poll-interval", 2*time.Second, "MinerU task polling interval")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
@@ -75,13 +76,14 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	}
 	if strings.TrimSpace(*minerUURL) != "" {
 		handler, err := markdown.NewMinerUPDFHandler(markdown.MinerUConfig{
-			BaseURL:     *minerUURL,
-			Endpoint:    *minerUEndpoint,
-			Token:       *minerUToken,
-			Backend:     *minerUBackend,
-			ParseMethod: *minerUParseMethod,
-			Language:    *minerULanguage,
-			Timeout:     *minerUTimeout,
+			BaseURL:      *minerUURL,
+			Endpoint:     *minerUEndpoint,
+			Token:        *minerUToken,
+			Backend:      *minerUBackend,
+			ParseMethod:  *minerUParseMethod,
+			Language:     *minerULanguage,
+			Timeout:      *minerUTimeout,
+			PollInterval: *minerUPollInterval,
 		})
 		if err != nil {
 			fmt.Fprintln(stderr, err)

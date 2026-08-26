@@ -98,13 +98,14 @@ converter := markdown.New(markdown.WithImageHandler(
 
 表格默认输出 HTML。合并列使用 `colspan`，合并行使用 `rowspan`，两种合并同时存在时会分别保留。需要输出简单 Markdown 表格时，可以使用 `markdown.WithTableFormat(markdown.TableFormatMarkdown)`；含合并单元格的表格仍会使用 HTML，避免结构丢失。
 
-PDF 优先使用自部署 MinerU。服务端应启动 MinerU HTTP API 并提供同步 `POST /file_parse` 接口。客户端会上传 `files` multipart 文件，启用公式和表格识别，并请求返回 Markdown 与 Base64 图片。MinerU 的 `md_content` 会原样返回，不会在 Go 客户端重新排版或转换表格；服务端返回的图片仍通过 `ImageHandler` 外置、按内容去重并替换附件链接。
+PDF 优先使用自部署 MinerU。服务端应启动 MinerU HTTP API 并提供异步任务接口：客户端先 `POST /tasks` 提交 `files` multipart 文件（启用公式和表格识别，并请求返回 Markdown 与 Base64 图片），随后轮询 `GET /tasks/{task_id}`，任务完成后通过 `GET /tasks/{task_id}/result` 获取结果。MinerU 的 `md_content` 会原样返回，不会在 Go 客户端重新排版或转换表格；服务端返回的图片仍通过 `ImageHandler` 外置、按内容去重并替换附件链接。
 
 ```go
 minerUHandler, err := markdown.NewMinerUPDFHandler(markdown.MinerUConfig{
 	BaseURL: "http://127.0.0.1:8000",
 	Backend: "pipeline",
 	Language: "ch",
+	PollInterval: 2 * time.Second,
 })
 if err != nil {
 	log.Fatal(err)
@@ -126,7 +127,7 @@ go run ./cmd/markdown -i report.pdf -o report.md --mineru-url http://127.0.0.1:8
 make build-markdown-cli-all
 ```
 
-MinerU CLI 还支持 `--mineru-endpoint`、`--mineru-token`、`--mineru-backend`、`--mineru-parse-method`、`--mineru-language` 和 `--mineru-timeout`。默认端点为 `/file_parse`，后端为 `pipeline`，解析方法为 `auto`，语言为 `ch`，超时为 20 分钟。
+MinerU CLI 还支持 `--mineru-endpoint`、`--mineru-token`、`--mineru-backend`、`--mineru-parse-method`、`--mineru-language`、`--mineru-timeout` 和 `--mineru-poll-interval`。默认任务提交端点为 `/tasks`，后端为 `pipeline`，解析方法为 `auto`，语言为 `ch`，总超时为 20 分钟，任务轮询间隔为 2 秒。
 
 CLI 使用输入文档文件名（basename，包含扩展名）的 MD5 作为附件目录名。使用 `-o result.md` 时，目录创建在输出文件同级；不传 `-o` 时创建在当前目录。Markdown 只保存 `<文件名MD5>/image.png` 形式的相对路径。内容相同的图片即使来源名称不同也只保存一份并复用链接；同名且内容不同的图片会自动添加数字后缀，不会互相覆盖。
 

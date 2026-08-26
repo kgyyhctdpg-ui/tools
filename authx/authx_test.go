@@ -3,16 +3,18 @@ package authx
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 )
 
 func TestPasswordHashAndVerify(t *testing.T) {
-	hash, err := HashPassword("secret", 4)
+	hash, err := HashPassword("123456")
 	if err != nil {
 		t.Fatal(err)
 	}
+	fmt.Println(hash)
 	if !VerifyPassword(hash, "secret") {
 		t.Fatal("password should verify")
 	}

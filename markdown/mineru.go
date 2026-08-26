@@ -22,15 +22,21 @@ import (
 )
 
 const (
-	defaultMinerUEndpoint        = "/file_parse"
+	defaultMinerUEndpoint        = "/tasks"
 	defaultMinerUBackend         = "pipeline"
 	defaultMinerUParseMethod     = "auto"
 	defaultMinerULanguage        = "ch"
 	defaultMinerUTimeout         = 20 * time.Minute
+	defaultMinerUPollInterval    = 2 * time.Second
 	defaultMinerUMaxResponseSize = int64(256 << 20)
 )
 
-// MinerUConfig configures a self-hosted MinerU /file_parse service.
+const (
+	minerUStatusCompleted = "completed"
+	minerUStatusFailed    = "failed"
+)
+
+// MinerUConfig configures a self-hosted MinerU async task API.
 type MinerUConfig struct {
 	BaseURL         string
 	Endpoint        string
@@ -41,21 +47,32 @@ type MinerUConfig struct {
 	DisableFormula  bool
 	DisableTable    bool
 	Timeout         time.Duration
+	PollInterval    time.Duration
 	MaxResponseSize int64
 	HTTPClient      *http.Client
 }
 
 type minerUClient struct {
-	endpoint    string
-	token       string
-	backend     string
-	parseMethod string
-	language    string
-	formula     bool
-	table       bool
-	timeout     time.Duration
-	maxBodySize int64
-	http        *http.Client
+	endpoint     string
+	token        string
+	backend      string
+	parseMethod  string
+	language     string
+	formula      bool
+	table        bool
+	timeout      time.Duration
+	pollInterval time.Duration
+	maxBodySize  int64
+	http         *http.Client
+}
+
+type minerUTask struct {
+	TaskID  string          `json:"task_id"`
+	Status  string          `json:"status"`
+	Error   string          `json:"error"`
+	ErrMsg  string          `json:"err_msg"`
+	Message string          `json:"message"`
+	Detail  json.RawMessage `json:"detail"`
 }
 
 type minerUResponse struct {
@@ -131,22 +148,27 @@ func newMinerUClient(config MinerUConfig) (*minerUClient, error) {
 	if timeout <= 0 {
 		timeout = defaultMinerUTimeout
 	}
+	pollInterval := config.PollInterval
+	if pollInterval <= 0 {
+		pollInterval = defaultMinerUPollInterval
+	}
 	maxResponseSize := config.MaxResponseSize
 	if maxResponseSize <= 0 {
 		maxResponseSize = defaultMinerUMaxResponseSize
 	}
 
 	return &minerUClient{
-		endpoint:    parsedEndpoint.String(),
-		token:       strings.TrimSpace(config.Token),
-		backend:     backend,
-		parseMethod: parseMethod,
-		language:    language,
-		formula:     !config.DisableFormula,
-		table:       !config.DisableTable,
-		timeout:     timeout,
-		maxBodySize: maxResponseSize,
-		http:        httpClientOrDefault(config.HTTPClient),
+		endpoint:     parsedEndpoint.String(),
+		token:        strings.TrimSpace(config.Token),
+		backend:      backend,
+		parseMethod:  parseMethod,
+		language:     language,
+		formula:      !config.DisableFormula,
+		table:        !config.DisableTable,
+		timeout:      timeout,
+		pollInterval: pollInterval,
+		maxBodySize:  maxResponseSize,
+		http:         httpClientOrDefault(config.HTTPClient),
 	}, nil
 }
 
@@ -172,10 +194,18 @@ func (client *minerUClient) convert(ctx context.Context, data []byte, info Strea
 		"return_model_output": "false",
 		"return_content_list": "false",
 		"return_images":       "true",
+		"response_format_zip": "false",
 	}
-	response, err := client.upload(ctx, name, data, fields)
+	task, err := client.submit(ctx, name, data, fields)
 	if err != nil {
 		return nil, fmt.Errorf("markdown: MinerU request failed: %w", err)
+	}
+	if err := client.waitForTask(ctx, task.TaskID); err != nil {
+		return nil, err
+	}
+	response, err := client.fetchResult(ctx, task.TaskID)
+	if err != nil {
+		return nil, fmt.Errorf("markdown: MinerU task %s result failed: %w", task.TaskID, err)
 	}
 	var payload minerUResponse
 	if err := json.Unmarshal(response, &payload); err != nil {
@@ -204,30 +234,74 @@ func (client *minerUClient) convert(ctx context.Context, data []byte, info Strea
 	}, nil
 }
 
-func (client *minerUClient) upload(ctx context.Context, name string, data []byte, fields map[string]string) ([]byte, error) {
+func (client *minerUClient) submit(ctx context.Context, name string, data []byte, fields map[string]string) (*minerUTask, error) {
+	body, contentType, err := client.multipartBody(name, data, fields)
+	if err != nil {
+		return nil, err
+	}
+	response, err := client.do(ctx, http.MethodPost, client.endpoint, body, contentType)
+	if err != nil {
+		return nil, err
+	}
+	var task minerUTask
+	if err := json.Unmarshal(response, &task); err != nil {
+		return nil, fmt.Errorf("decode MinerU task response: %w", err)
+	}
+	if task.TaskID == "" {
+		return nil, fmt.Errorf("MinerU task response has no task_id%s", minerUDetail(task.Message, task.Detail))
+	}
+	if task.Status == minerUStatusFailed {
+		return nil, fmt.Errorf("MinerU task failed: %s", firstNonEmpty(task.Error, task.ErrMsg, task.Message))
+	}
+	return &task, nil
+}
+
+func (client *minerUClient) multipartBody(name string, data []byte, fields map[string]string) (*bytes.Buffer, string, error) {
 	var buf bytes.Buffer
 	writer := multipart.NewWriter(&buf)
 	for key, value := range fields {
 		if err := writer.WriteField(key, value); err != nil {
-			return nil, err
+			return nil, "", err
 		}
 	}
 	part, err := writer.CreateFormFile("files", name)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if _, err := part.Write(data); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if err := writer.Close(); err != nil {
-		return nil, err
+		return nil, "", err
 	}
+	return &buf, writer.FormDataContentType(), nil
+}
 
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, client.endpoint, &buf)
+func (client *minerUClient) do(ctx context.Context, method, target string, body io.Reader, contentType string) ([]byte, error) {
+	response, err := client.request(ctx, method, target, body, contentType)
 	if err != nil {
 		return nil, err
 	}
-	request.Header.Set("Content-Type", writer.FormDataContentType())
+	if response.status < http.StatusOK || response.status >= http.StatusMultipleChoices {
+		return nil, fmt.Errorf("status %s: %s", response.statusText, strings.TrimSpace(string(response.body)))
+	}
+	return response.body, nil
+}
+
+type minerUHTTPResponse struct {
+	status     int
+	statusText string
+	body       []byte
+}
+
+func (client *minerUClient) request(ctx context.Context, method, target string, body io.Reader, contentType string) (*minerUHTTPResponse, error) {
+	request, err := http.NewRequestWithContext(ctx, method, target, body)
+	if err != nil {
+		return nil, err
+	}
+	if contentType != "" {
+		request.Header.Set("Content-Type", contentType)
+	}
 	request.Header.Set("Accept", "application/json")
 	if client.token != "" {
 		request.Header.Set("Authorization", "Bearer "+client.token)
@@ -237,23 +311,117 @@ func (client *minerUClient) upload(ctx context.Context, name string, data []byte
 	if err != nil {
 		return nil, err
 	}
-	defer response.Body.Close()
-
-	reader := response.Body
+	reader := io.Reader(response.Body)
 	if client.maxBodySize > 0 {
-		reader = io.NopCloser(io.LimitReader(response.Body, client.maxBodySize+1))
+		reader = io.LimitReader(response.Body, client.maxBodySize+1)
 	}
-	body, err := io.ReadAll(reader)
+	payload, err := io.ReadAll(reader)
+	closeErr := response.Body.Close()
 	if err != nil {
 		return nil, err
 	}
-	if client.maxBodySize > 0 && int64(len(body)) > client.maxBodySize {
+	if closeErr != nil {
+		return nil, closeErr
+	}
+	if client.maxBodySize > 0 && int64(len(payload)) > client.maxBodySize {
 		return nil, fmt.Errorf("response body exceeds %d bytes", client.maxBodySize)
 	}
-	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return nil, fmt.Errorf("status %s: %s", response.Status, strings.TrimSpace(string(body)))
+	return &minerUHTTPResponse{
+		status:     response.StatusCode,
+		statusText: response.Status,
+		body:       payload,
+	}, nil
+}
+
+func (client *minerUClient) waitForTask(ctx context.Context, taskID string) error {
+	for {
+		task, err := client.taskStatus(ctx, taskID)
+		if err != nil {
+			return fmt.Errorf("markdown: query MinerU task %s: %w", taskID, err)
+		}
+		switch task.Status {
+		case minerUStatusCompleted:
+			return nil
+		case minerUStatusFailed:
+			return fmt.Errorf("markdown: MinerU task %s failed: %s", taskID, firstNonEmpty(task.Error, task.ErrMsg, task.Message))
+		}
+		if err := waitMinerUInterval(ctx, client.pollInterval); err != nil {
+			return fmt.Errorf("markdown: waiting for MinerU task %s: %w", taskID, err)
+		}
 	}
-	return body, nil
+}
+
+func (client *minerUClient) taskStatus(ctx context.Context, taskID string) (*minerUTask, error) {
+	target, err := client.taskURL(taskID, "")
+	if err != nil {
+		return nil, err
+	}
+	body, err := client.do(ctx, http.MethodGet, target, nil, "")
+	if err != nil {
+		return nil, err
+	}
+	var task minerUTask
+	if err := json.Unmarshal(body, &task); err != nil {
+		return nil, fmt.Errorf("decode MinerU task status: %w", err)
+	}
+	if task.TaskID != "" && task.TaskID != taskID {
+		return nil, fmt.Errorf("unexpected MinerU task id %q for %q", task.TaskID, taskID)
+	}
+	return &task, nil
+}
+
+func (client *minerUClient) fetchResult(ctx context.Context, taskID string) ([]byte, error) {
+	target, err := client.taskURL(taskID, "result")
+	if err != nil {
+		return nil, err
+	}
+	for {
+		response, err := client.request(ctx, http.MethodGet, target, nil, "")
+		if err != nil {
+			return nil, err
+		}
+		if response.status >= http.StatusOK && response.status < http.StatusMultipleChoices {
+			return response.body, nil
+		}
+		if response.status == http.StatusAccepted || response.status == http.StatusConflict {
+			var task minerUTask
+			if json.Unmarshal(response.body, &task) == nil {
+				if task.Status == minerUStatusFailed || response.status == http.StatusConflict {
+					return nil, fmt.Errorf("MinerU task %s failed: %s", taskID, firstNonEmpty(task.Error, task.ErrMsg, task.Message))
+				}
+			}
+			if err := waitMinerUInterval(ctx, client.pollInterval); err != nil {
+				return nil, fmt.Errorf("waiting for MinerU task %s result: %w", taskID, err)
+			}
+			continue
+		}
+		return nil, fmt.Errorf("status %s: %s", response.statusText, strings.TrimSpace(string(response.body)))
+	}
+}
+
+func (client *minerUClient) taskURL(taskID, suffix string) (string, error) {
+	parsed, err := url.Parse(client.endpoint)
+	if err != nil {
+		return "", err
+	}
+	parsed.Path = strings.TrimSuffix(parsed.Path, "/") + "/" + url.PathEscape(taskID)
+	if suffix != "" {
+		parsed.Path += "/" + suffix
+	}
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	return parsed.String(), nil
+}
+
+func waitMinerUInterval(ctx context.Context, interval time.Duration) error {
+	timer := time.NewTimer(interval)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func httpClientOrDefault(client *http.Client) *http.Client {
@@ -297,19 +465,23 @@ func validateMinerUDocument(document minerUDocument) (minerUDocument, error) {
 }
 
 func minerUResponseDetail(payload minerUResponse) string {
-	message := strings.TrimSpace(payload.Message)
-	if len(payload.Detail) > 0 && string(payload.Detail) != "null" {
-		var detail any
-		if json.Unmarshal(payload.Detail, &detail) == nil {
-			if encoded, err := json.Marshal(detail); err == nil {
-				message = string(encoded)
+	return minerUDetail(payload.Message, payload.Detail)
+}
+
+func minerUDetail(message string, detail json.RawMessage) string {
+	text := strings.TrimSpace(message)
+	if len(detail) > 0 && string(detail) != "null" {
+		var value any
+		if json.Unmarshal(detail, &value) == nil {
+			if encoded, err := json.Marshal(value); err == nil {
+				text = string(encoded)
 			}
 		}
 	}
-	if message == "" {
+	if text == "" {
 		return ""
 	}
-	return ": " + message
+	return ": " + text
 }
 
 func prepareMinerUMarkdown(ctx context.Context, source string, images map[string]string, imageHandler ImageHandler) (string, error) {
@@ -361,10 +533,12 @@ func externalizeMinerUImages(ctx context.Context, images map[string]string, imag
 		normalized := normalizeMinerUImagePath(name)
 		links[normalized] = imageURL
 		base := path.Base(normalized)
-		if previous, ok := aliases[base]; !ok {
-			aliases[base] = imageURL
-		} else if previous != imageURL {
-			aliases[base] = ""
+		for _, candidate := range []string{base, path.Join("images", base)} {
+			if previous, ok := aliases[candidate]; !ok {
+				aliases[candidate] = imageURL
+			} else if previous != imageURL {
+				aliases[candidate] = ""
+			}
 		}
 	}
 	for name, imageURL := range aliases {
