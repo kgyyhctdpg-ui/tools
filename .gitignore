@@ -2,3 +2,8 @@ test/
 tmp/
 plugins/
 bin/
+
+# Local caches and session state, never part of the source tree.
+.gocache/
+.gomodcache/
+.dsh/

@@ -1,18 +1,6 @@
 package markdown
 
-import (
-	"context"
-	"strings"
-)
-
-type converterFunc func(context.Context, []byte, StreamInfo) (*Result, error)
-
-type extensionConverter struct {
-	extensions []string
-	mimeTypes  []string
-	convert    converterFunc
-}
-
+// builtinGroup selects which families of built-in converters an engine holds.
 type builtinGroup uint8
 
 const (
@@ -23,35 +11,6 @@ const (
 	builtinPDF
 	builtinAll = builtinText | builtinOffice | builtinArchive | builtinImage | builtinPDF
 )
-
-func newExtensionConverter(extensions, mimeTypes []string, convert converterFunc) *extensionConverter {
-	for index := range extensions {
-		extensions[index] = normalizeExtension(extensions[index])
-	}
-	return &extensionConverter{extensions: extensions, mimeTypes: mimeTypes, convert: convert}
-}
-
-func (converter *extensionConverter) Supports(info StreamInfo) bool {
-	for _, extension := range converter.extensions {
-		if extension == info.Extension {
-			return true
-		}
-	}
-	for _, mimeType := range converter.mimeTypes {
-		if mimeType == info.MIMEType || (strings.HasSuffix(mimeType, "/") && strings.HasPrefix(info.MIMEType, mimeType)) {
-			return true
-		}
-	}
-	return false
-}
-
-func (converter *extensionConverter) Convert(ctx context.Context, data []byte, info StreamInfo) (*Result, error) {
-	return converter.convert(ctx, data, info)
-}
-
-func (converter *extensionConverter) Extensions() []string {
-	return append([]string(nil), converter.extensions...)
-}
 
 // WithBuiltins enables every built-in converter on an engine created with
 // NewCore. Calling it for New is harmless.
@@ -123,28 +82,28 @@ func (engine *MarkItDown) registerBuiltinGroups(groups builtinGroup) {
 
 	if groups&builtinText != 0 && engine.registeredGroups&builtinText == 0 {
 		engine.converters = append(engine.converters,
-			newTextConverter(), newHTMLConverter(), newCSVConverter(), newStructuredTextConverter(),
+			newTextConverter(), newHTMLConverter(), newCSVConverter(), newStructuredConverter(),
 		)
 		engine.registeredGroups |= builtinText
 	}
 	if groups&builtinOffice != 0 && engine.registeredGroups&builtinOffice == 0 {
 		engine.converters = append(engine.converters,
-			newDOCXConverter(engine), newXLSXConverter(), newPPTXConverter(),
+			newDOCXConverter(&engine.Settings), newXLSXConverter(), newPPTXConverter(),
 		)
 		engine.registeredGroups |= builtinOffice
 	}
 	if groups&builtinArchive != 0 && engine.registeredGroups&builtinArchive == 0 {
 		engine.converters = append(engine.converters,
-			newEPUBConverter(), newEMLConverter(engine), newZIPConverter(engine),
+			newEPUBConverter(), newEMLConverter(&engine.Settings), newZIPConverter(&engine.Settings),
 		)
 		engine.registeredGroups |= builtinArchive
 	}
 	if groups&builtinImage != 0 && engine.registeredGroups&builtinImage == 0 {
-		engine.converters = append(engine.converters, newImageConverter(engine))
+		engine.converters = append(engine.converters, newImageConverter(&engine.Settings))
 		engine.registeredGroups |= builtinImage
 	}
 	if groups&builtinPDF != 0 && engine.registeredGroups&builtinPDF == 0 {
-		engine.converters = append(engine.converters, newPDFConverter(engine))
+		engine.converters = append(engine.converters, newPDFConverter(&engine.Settings))
 		engine.registeredGroups |= builtinPDF
 	}
 }

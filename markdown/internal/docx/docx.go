@@ -1,11 +1,12 @@
-package markdown
+package docx
 
 import (
 	"context"
 	"encoding/hex"
 	"fmt"
+	"github.com/scoming-dev/tools/markdown/internal/core"
+	"github.com/scoming-dev/tools/markdown/internal/ooxml"
 	"html"
-	"net/http"
 	"net/url"
 	"path"
 	"strconv"
@@ -13,20 +14,21 @@ import (
 )
 
 type docxConverter struct {
-	engine *MarkItDown
+	settings *core.Settings
 }
 
-func newDOCXConverter(engine *MarkItDown) Converter {
-	converter := &docxConverter{engine: engine}
-	return newExtensionConverter(
+// NewConverter builds the DOCX converter.
+func NewConverter(settings *core.Settings) core.Converter {
+	converter := &docxConverter{settings: settings}
+	return core.NewExtensionConverter(
 		[]string{".docx"},
 		[]string{"application/vnd.openxmlformats-officedocument.wordprocessingml.document"},
 		converter.convert,
 	)
 }
 
-func (converter *docxConverter) convert(ctx context.Context, data []byte, _ StreamInfo) (*Result, error) {
-	parts, err := officeParts(data, func(name string) bool {
+func (converter *docxConverter) convert(ctx context.Context, data []byte, _ core.StreamInfo) (*core.Result, error) {
+	parts, err := core.OfficeParts(data, func(name string) bool {
 		return name == "word/document.xml" || name == "word/numbering.xml" ||
 			name == "word/styles.xml" || name == "word/footnotes.xml" ||
 			name == "word/endnotes.xml" || name == "docProps/core.xml" ||
@@ -39,19 +41,19 @@ func (converter *docxConverter) convert(ctx context.Context, data []byte, _ Stre
 	if !ok {
 		return nil, fmt.Errorf("markdown: docx has no word/document.xml")
 	}
-	root, err := parseXML(documentXML)
+	root, err := core.ParseXML(documentXML)
 	if err != nil {
 		return nil, fmt.Errorf("markdown: parse docx document: %w", err)
 	}
 
 	renderer := &docxRenderer{
 		ctx:       ctx,
-		engine:    converter.engine,
+		settings:  converter.settings,
 		parts:     parts,
-		relations: make(map[string]map[string]relationship),
+		relations: make(map[string]map[string]core.Relationship),
 		numbering: parseDOCXNumbering(parts["word/numbering.xml"]),
 	}
-	body := root.first("body")
+	body := root.First("body")
 	if body == nil {
 		return nil, fmt.Errorf("markdown: docx document has no body")
 	}
@@ -62,20 +64,20 @@ func (converter *docxConverter) convert(ctx context.Context, data []byte, _ Stre
 		return nil, renderer.err
 	}
 
-	title, metadata := coreProperties(parts["docProps/core.xml"])
-	return &Result{Title: title, Markdown: joinMarkdownBlocks(blocks), Metadata: metadata}, nil
+	title, metadata := core.CoreProperties(parts["docProps/core.xml"])
+	return &core.Result{Title: title, Markdown: core.JoinBlocks(blocks), Metadata: metadata}, nil
 }
 
 type docxRenderer struct {
 	ctx       context.Context
-	engine    *MarkItDown
+	settings  *core.Settings
 	parts     map[string][]byte
-	relations map[string]map[string]relationship
+	relations map[string]map[string]core.Relationship
 	numbering map[string]map[int]string
 	err       error
 }
 
-func (renderer *docxRenderer) renderBlocks(parent *xmlNode, partName string, inTable bool) []string {
+func (renderer *docxRenderer) renderBlocks(parent *core.XMLNode, partName string, inTable bool) []string {
 	if parent == nil || renderer.err != nil {
 		return nil
 	}
@@ -104,7 +106,7 @@ func (renderer *docxRenderer) renderBlocks(parent *xmlNode, partName string, inT
 	return blocks
 }
 
-func (renderer *docxRenderer) renderParagraph(paragraph *xmlNode, partName string, inTable bool) string {
+func (renderer *docxRenderer) renderParagraph(paragraph *core.XMLNode, partName string, inTable bool) string {
 	var out strings.Builder
 	for _, child := range paragraph.Children {
 		if child.Name == "pPr" || renderer.skipNode(child) {
@@ -117,7 +119,7 @@ func (renderer *docxRenderer) renderParagraph(paragraph *xmlNode, partName strin
 		return content
 	}
 
-	properties := paragraph.child("pPr")
+	properties := paragraph.Child("pPr")
 	if level := docxHeadingLevel(properties); level > 0 {
 		return strings.Repeat("#", level) + " " + content
 	}
@@ -125,8 +127,8 @@ func (renderer *docxRenderer) renderParagraph(paragraph *xmlNode, partName strin
 		return strings.Repeat("  ", indent) + marker + " " + content
 	}
 	style := ""
-	if properties != nil && properties.child("pStyle") != nil {
-		style = strings.ToLower(properties.child("pStyle").attr("val"))
+	if properties != nil && properties.Child("pStyle") != nil {
+		style = strings.ToLower(properties.Child("pStyle").Attr("val"))
 	}
 	if strings.Contains(style, "quote") {
 		return "> " + strings.ReplaceAll(content, "\n", "\n> ")
@@ -134,7 +136,7 @@ func (renderer *docxRenderer) renderParagraph(paragraph *xmlNode, partName strin
 	return content
 }
 
-func (renderer *docxRenderer) renderInline(node *xmlNode, partName string, inTable bool) string {
+func (renderer *docxRenderer) renderInline(node *core.XMLNode, partName string, inTable bool) string {
 	if node == nil || renderer.err != nil || renderer.skipNode(node) {
 		return ""
 	}
@@ -161,7 +163,7 @@ func (renderer *docxRenderer) renderInline(node *xmlNode, partName string, inTab
 		return renderer.renderInline(selectAlternateContent(node), partName, inTable)
 	case "t", "delText":
 		if inTable {
-			return htmlEscapeText(node.Text)
+			return core.HTMLEscapeText(node.Text)
 		}
 		return escapeDOCXMarkdownText(node.Text)
 	case "tab":
@@ -178,9 +180,9 @@ func (renderer *docxRenderer) renderInline(node *xmlNode, partName string, inTab
 	case "sym":
 		return renderDOCXSymbol(node)
 	case "footnoteReference":
-		return "[^" + node.attr("id") + "]"
+		return "[^" + node.Attr("id") + "]"
 	case "endnoteReference":
-		return "[^endnote-" + node.attr("id") + "]"
+		return "[^endnote-" + node.Attr("id") + "]"
 	case "sdt", "sdtContent", "customXml", "ins", "moveTo", "smartTag", "fldSimple":
 		return renderer.renderInlineChildren(node, partName, inTable)
 	case "instrText", "pPr", "rPr", "bookmarkStart", "bookmarkEnd", "proofErr", "lastRenderedPageBreak":
@@ -190,7 +192,7 @@ func (renderer *docxRenderer) renderInline(node *xmlNode, partName string, inTab
 	}
 }
 
-func (renderer *docxRenderer) renderInlineChildren(node *xmlNode, partName string, inTable bool) string {
+func (renderer *docxRenderer) renderInlineChildren(node *core.XMLNode, partName string, inTable bool) string {
 	if node == nil {
 		return ""
 	}
@@ -201,9 +203,9 @@ func (renderer *docxRenderer) renderInlineChildren(node *xmlNode, partName strin
 	return out.String()
 }
 
-func (renderer *docxRenderer) renderRun(run *xmlNode, partName string, inTable bool) string {
-	properties := run.child("rPr")
-	hasNativeMath := len(run.descendants("oMath")) > 0 || len(run.descendants("oMathPara")) > 0
+func (renderer *docxRenderer) renderRun(run *core.XMLNode, partName string, inTable bool) string {
+	properties := run.Child("rPr")
+	hasNativeMath := len(run.Descendants("oMath")) > 0 || len(run.Descendants("oMathPara")) > 0
 	var out strings.Builder
 	for _, child := range run.Children {
 		if child.Name == "rPr" {
@@ -220,29 +222,29 @@ func (renderer *docxRenderer) renderRun(run *xmlNode, partName string, inTable b
 	}
 
 	if properties != nil {
-		if docxOnOff(properties.child("vertAlign")) || properties.child("vertAlign") != nil {
-			vertical := properties.child("vertAlign").attr("val")
+		if docxOnOff(properties.Child("vertAlign")) || properties.Child("vertAlign") != nil {
+			vertical := properties.Child("vertAlign").Attr("val")
 			if vertical == "superscript" {
 				content = "<sup>" + content + "</sup>"
 			} else if vertical == "subscript" {
 				content = "<sub>" + content + "</sub>"
 			}
 		}
-		if docxOnOff(properties.child("strike")) || docxOnOff(properties.child("dstrike")) {
+		if docxOnOff(properties.Child("strike")) || docxOnOff(properties.Child("dstrike")) {
 			if inTable {
 				content = "<del>" + content + "</del>"
 			} else {
 				content = "~~" + content + "~~"
 			}
 		}
-		if docxOnOff(properties.child("i")) || docxOnOff(properties.child("iCs")) {
+		if docxOnOff(properties.Child("i")) || docxOnOff(properties.Child("iCs")) {
 			if inTable {
 				content = "<em>" + content + "</em>"
 			} else {
 				content = "*" + content + "*"
 			}
 		}
-		if docxOnOff(properties.child("b")) || docxOnOff(properties.child("bCs")) {
+		if docxOnOff(properties.Child("b")) || docxOnOff(properties.Child("bCs")) {
 			if inTable {
 				content = "<strong>" + content + "</strong>"
 			} else {
@@ -253,9 +255,9 @@ func (renderer *docxRenderer) renderRun(run *xmlNode, partName string, inTable b
 	return content
 }
 
-func (renderer *docxRenderer) renderHyperlink(node *xmlNode, partName string, inTable bool) string {
+func (renderer *docxRenderer) renderHyperlink(node *core.XMLNode, partName string, inTable bool) string {
 	content := renderer.renderInlineChildren(node, partName, inTable)
-	relationID := node.attr("id")
+	relationID := node.Attr("id")
 	if relationID == "" || content == "" {
 		return content
 	}
@@ -269,15 +271,15 @@ func (renderer *docxRenderer) renderHyperlink(node *xmlNode, partName string, in
 	return "[" + content + "](" + relation.Target + ")"
 }
 
-func (renderer *docxRenderer) renderImages(container *xmlNode, partName string, inTable bool) string {
+func (renderer *docxRenderer) renderImages(container *core.XMLNode, partName string, inTable bool) string {
 	if container == nil || renderer.err != nil {
 		return ""
 	}
-	candidates := container.descendants("svgBlip")
+	candidates := container.Descendants("svgBlip")
 	if len(candidates) == 0 {
-		candidates = container.descendants("blip")
+		candidates = container.Descendants("blip")
 	}
-	candidates = append(candidates, container.descendants("imagedata")...)
+	candidates = append(candidates, container.Descendants("imagedata")...)
 	if len(candidates) == 0 {
 		return ""
 	}
@@ -286,12 +288,12 @@ func (renderer *docxRenderer) renderImages(container *xmlNode, partName string, 
 	seen := make(map[string]bool)
 	images := make([]string, 0, len(candidates))
 	for _, candidate := range candidates {
-		relationID := candidate.attr("embed")
+		relationID := candidate.Attr("embed")
 		if relationID == "" {
-			relationID = candidate.attr("link")
+			relationID = candidate.Attr("link")
 		}
 		if relationID == "" {
-			relationID = candidate.attr("id")
+			relationID = candidate.Attr("id")
 		}
 		if relationID == "" || seen[relationID] {
 			continue
@@ -308,7 +310,7 @@ func (renderer *docxRenderer) renderImages(container *xmlNode, partName string, 
 		if inTable {
 			images = append(images, `<img src="`+html.EscapeString(imageURL)+`" alt="`+html.EscapeString(altText)+`">`)
 		} else {
-			images = append(images, markdownImage(altText, imageURL))
+			images = append(images, core.MarkdownImage(altText, imageURL))
 		}
 	}
 	return strings.Join(images, "")
@@ -331,12 +333,12 @@ func (renderer *docxRenderer) resolveImage(partName, relationID, altText string)
 	if !ok {
 		return "", nil
 	}
-	mimeType := imageMIMEType(partPath, data)
-	handler := renderer.engine.imageHandler
+	mimeType := core.ImageMIMEType(partPath, data)
+	handler := renderer.settings.ImageHandlerOrDefault()
 	if handler == nil {
-		handler = DataURIImageHandler
+		handler = core.DataURIImageHandler
 	}
-	imageURL, err := handler(renderer.ctx, Image{
+	imageURL, err := handler(renderer.ctx, core.Image{
 		Name:     path.Base(partPath),
 		MIMEType: mimeType,
 		AltText:  altText,
@@ -348,12 +350,12 @@ func (renderer *docxRenderer) resolveImage(partName, relationID, altText string)
 	return imageURL, nil
 }
 
-func (renderer *docxRenderer) relationshipsFor(partName string) map[string]relationship {
+func (renderer *docxRenderer) relationshipsFor(partName string) map[string]core.Relationship {
 	if relationships, ok := renderer.relations[partName]; ok {
 		return relationships
 	}
 	relsName := path.Join(path.Dir(partName), "_rels", path.Base(partName)+".rels")
-	relationships := parseRelationships(renderer.parts[relsName])
+	relationships := core.ParseRelationships(renderer.parts[relsName])
 	renderer.relations[partName] = relationships
 	return relationships
 }
@@ -370,7 +372,7 @@ type docxTableRow struct {
 	cells []*docxTableCell
 }
 
-func (renderer *docxRenderer) renderTable(table *xmlNode, partName string) string {
+func (renderer *docxRenderer) renderTable(table *core.XMLNode, partName string) string {
 	rowNodes := wrappedDOCXChildren(table, "tr")
 	if len(rowNodes) == 0 {
 		return ""
@@ -386,29 +388,29 @@ func (renderer *docxRenderer) renderTable(table *xmlNode, partName string) strin
 		touched := make(map[int]bool)
 		incremented := make(map[*docxTableCell]bool)
 		for _, cellNode := range wrappedDOCXChildren(rowNode, "tc") {
-			properties := cellNode.child("tcPr")
+			properties := cellNode.Child("tcPr")
 			colSpan := 1
-			if properties != nil && properties.child("gridSpan") != nil {
-				if value, err := strconv.Atoi(properties.child("gridSpan").attr("val")); err == nil && value > 1 {
+			if properties != nil && properties.Child("gridSpan") != nil {
+				if value, err := strconv.Atoi(properties.Child("gridSpan").Attr("val")); err == nil && value > 1 {
 					colSpan = value
 				}
 			}
 			content, nested := renderer.renderTableCell(cellNode, partName)
-			merge := (*xmlNode)(nil)
+			merge := (*core.XMLNode)(nil)
 			if properties != nil {
-				merge = properties.child("vMerge")
+				merge = properties.Child("vMerge")
 			}
 			mergeValue := ""
 			if merge != nil {
-				mergeValue = strings.ToLower(merge.attr("val"))
+				mergeValue = strings.ToLower(merge.Attr("val"))
 			}
-			horizontalMerge := (*xmlNode)(nil)
+			horizontalMerge := (*core.XMLNode)(nil)
 			if properties != nil {
-				horizontalMerge = properties.child("hMerge")
+				horizontalMerge = properties.Child("hMerge")
 			}
 			horizontalMergeValue := ""
 			if horizontalMerge != nil {
-				horizontalMergeValue = strings.ToLower(horizontalMerge.attr("val"))
+				horizontalMergeValue = strings.ToLower(horizontalMerge.Attr("val"))
 			}
 
 			if horizontalMerge != nil && horizontalMergeValue != "restart" && len(row.cells) > 0 {
@@ -479,8 +481,8 @@ func (renderer *docxRenderer) renderTable(table *xmlNode, partName string) strin
 		rows = append(rows, row)
 	}
 
-	config, _ := renderer.ctx.Value(conversionConfigKey{}).(conversionConfig)
-	if !hasSpans && !hasNestedTable && config.tableFormat != TableFormatHTML {
+	tableFormat := core.TableFormatFromContext(renderer.ctx)
+	if !hasSpans && !hasNestedTable && tableFormat != core.TableFormatHTML {
 		plainRows := make([][]string, 0, len(rows))
 		for _, row := range rows {
 			values := make([]string, 0, len(row.cells))
@@ -489,16 +491,16 @@ func (renderer *docxRenderer) renderTable(table *xmlNode, partName string) strin
 			}
 			plainRows = append(plainRows, values)
 		}
-		return markdownTable(plainRows)
+		return core.MarkdownTable(plainRows)
 	}
 	return renderDOCXHTMLTable(rows)
 }
 
-func (renderer *docxRenderer) renderTableCell(cell *xmlNode, partName string) (string, bool) {
+func (renderer *docxRenderer) renderTableCell(cell *core.XMLNode, partName string) (string, bool) {
 	parts := make([]string, 0)
 	nested := false
-	var walk func(*xmlNode)
-	walk = func(parent *xmlNode) {
+	var walk func(*core.XMLNode)
+	walk = func(parent *core.XMLNode) {
 		for _, child := range parent.Children {
 			if renderer.skipNode(child) || child.Name == "tcPr" {
 				continue
@@ -527,44 +529,15 @@ func (renderer *docxRenderer) renderTableCell(cell *xmlNode, partName string) (s
 }
 
 func renderDOCXHTMLTable(rows []docxTableRow) string {
-	if len(rows) == 0 {
-		return ""
-	}
-	var out strings.Builder
-	out.WriteString("<table>")
-	for rowIndex, row := range rows {
-		out.WriteString("\n<tr>")
-		tag := "td"
-		if rowIndex == 0 {
-			tag = "th"
-		}
+	grid := make([]ooxml.TableRow, 0, len(rows))
+	for _, row := range rows {
+		cells := make([]ooxml.TableCell, 0, len(row.cells))
 		for _, cell := range row.cells {
-			writeDOCXHTMLCell(&out, tag, cell)
+			cells = append(cells, ooxml.TableCell{Content: cell.content, ColSpan: cell.colSpan, RowSpan: cell.rowSpan})
 		}
-		out.WriteString("</tr>")
+		grid = append(grid, ooxml.TableRow{Cells: cells})
 	}
-	out.WriteString("\n</table>")
-	return out.String()
-}
-
-func writeDOCXHTMLCell(out *strings.Builder, tag string, cell *docxTableCell) {
-	out.WriteString("<")
-	out.WriteString(tag)
-	if cell.colSpan > 1 {
-		out.WriteString(` colspan="`)
-		out.WriteString(strconv.Itoa(cell.colSpan))
-		out.WriteString(`"`)
-	}
-	if cell.rowSpan > 1 {
-		out.WriteString(` rowspan="`)
-		out.WriteString(strconv.Itoa(cell.rowSpan))
-		out.WriteString(`"`)
-	}
-	out.WriteString(">")
-	out.WriteString(cell.content)
-	out.WriteString("</")
-	out.WriteString(tag)
-	out.WriteString(">")
+	return ooxml.RenderHTMLTable(grid)
 }
 
 func (renderer *docxRenderer) renderNotes(partName, elementName string) []string {
@@ -572,18 +545,18 @@ func (renderer *docxRenderer) renderNotes(partName, elementName string) []string
 	if len(data) == 0 {
 		return nil
 	}
-	root, err := parseXML(data)
+	root, err := core.ParseXML(data)
 	if err != nil {
 		return nil
 	}
 	definitions := make([]string, 0)
-	for _, note := range root.descendants(elementName) {
-		id := note.attr("id")
+	for _, note := range root.Descendants(elementName) {
+		id := note.Attr("id")
 		value, parseErr := strconv.Atoi(id)
 		if parseErr != nil || value < 0 {
 			continue
 		}
-		content := joinMarkdownBlocks(renderer.renderBlocks(note, partName, false))
+		content := core.JoinBlocks(renderer.renderBlocks(note, partName, false))
 		if content == "" {
 			continue
 		}
@@ -597,18 +570,18 @@ func (renderer *docxRenderer) renderNotes(partName, elementName string) []string
 	return definitions
 }
 
-func (renderer *docxRenderer) listMarker(properties *xmlNode) (string, int) {
-	if properties == nil || properties.child("numPr") == nil {
+func (renderer *docxRenderer) listMarker(properties *core.XMLNode) (string, int) {
+	if properties == nil || properties.Child("numPr") == nil {
 		return "", 0
 	}
-	numberProperties := properties.child("numPr")
+	numberProperties := properties.Child("numPr")
 	numberID := ""
 	level := 0
-	if node := numberProperties.child("numId"); node != nil {
-		numberID = node.attr("val")
+	if node := numberProperties.Child("numId"); node != nil {
+		numberID = node.Attr("val")
 	}
-	if node := numberProperties.child("ilvl"); node != nil {
-		level, _ = strconv.Atoi(node.attr("val"))
+	if node := numberProperties.Child("ilvl"); node != nil {
+		level, _ = strconv.Atoi(node.Attr("val"))
 	}
 	format := renderer.numbering[numberID][level]
 	if format == "bullet" {
@@ -617,7 +590,7 @@ func (renderer *docxRenderer) listMarker(properties *xmlNode) (string, int) {
 	return "1.", level
 }
 
-func (renderer *docxRenderer) skipNode(node *xmlNode) bool {
+func (renderer *docxRenderer) skipNode(node *core.XMLNode) bool {
 	if node == nil {
 		return true
 	}
@@ -629,35 +602,35 @@ func parseDOCXNumbering(data []byte) map[string]map[int]string {
 	if len(data) == 0 {
 		return result
 	}
-	root, err := parseXML(data)
+	root, err := core.ParseXML(data)
 	if err != nil {
 		return result
 	}
 	abstract := make(map[string]map[int]string)
-	for _, item := range root.descendants("abstractNum") {
+	for _, item := range root.Descendants("abstractNum") {
 		levels := make(map[int]string)
-		for _, level := range item.children("lvl") {
-			index, _ := strconv.Atoi(level.attr("ilvl"))
+		for _, level := range item.ChildrenNamed("lvl") {
+			index, _ := strconv.Atoi(level.Attr("ilvl"))
 			format := "decimal"
-			if node := level.child("numFmt"); node != nil && node.attr("val") != "" {
-				format = node.attr("val")
+			if node := level.Child("numFmt"); node != nil && node.Attr("val") != "" {
+				format = node.Attr("val")
 			}
 			levels[index] = format
 		}
-		abstract[item.attr("abstractNumId")] = levels
+		abstract[item.Attr("abstractNumId")] = levels
 	}
-	for _, item := range root.descendants("num") {
-		if abstractID := item.child("abstractNumId"); abstractID != nil {
-			result[item.attr("numId")] = abstract[abstractID.attr("val")]
+	for _, item := range root.Descendants("num") {
+		if abstractID := item.Child("abstractNumId"); abstractID != nil {
+			result[item.Attr("numId")] = abstract[abstractID.Attr("val")]
 		}
 	}
 	return result
 }
 
-func wrappedDOCXChildren(parent *xmlNode, target string) []*xmlNode {
-	result := make([]*xmlNode, 0)
-	var walk func(*xmlNode)
-	walk = func(current *xmlNode) {
+func wrappedDOCXChildren(parent *core.XMLNode, target string) []*core.XMLNode {
+	result := make([]*core.XMLNode, 0)
+	var walk func(*core.XMLNode)
+	walk = func(current *core.XMLNode) {
 		for _, child := range current.Children {
 			if child.Name == "del" || child.Name == "moveFrom" {
 				continue
@@ -676,30 +649,30 @@ func wrappedDOCXChildren(parent *xmlNode, target string) []*xmlNode {
 	return result
 }
 
-func selectAlternateContent(node *xmlNode) *xmlNode {
+func selectAlternateContent(node *core.XMLNode) *core.XMLNode {
 	if node == nil {
 		return nil
 	}
-	if choice := node.child("Choice"); choice != nil {
+	if choice := node.Child("Choice"); choice != nil {
 		return choice
 	}
-	return node.child("Fallback")
+	return node.Child("Fallback")
 }
 
-func docxHeadingLevel(properties *xmlNode) int {
+func docxHeadingLevel(properties *core.XMLNode) int {
 	if properties == nil {
 		return 0
 	}
-	if outline := properties.child("outlineLvl"); outline != nil {
-		if level, err := strconv.Atoi(outline.attr("val")); err == nil && level >= 0 && level < 6 {
+	if outline := properties.Child("outlineLvl"); outline != nil {
+		if level, err := strconv.Atoi(outline.Attr("val")); err == nil && level >= 0 && level < 6 {
 			return level + 1
 		}
 	}
-	style := properties.child("pStyle")
+	style := properties.Child("pStyle")
 	if style == nil {
 		return 0
 	}
-	value := strings.ToLower(style.attr("val"))
+	value := strings.ToLower(style.Attr("val"))
 	value = strings.ReplaceAll(value, " ", "")
 	for _, prefix := range []string{"heading", "标题"} {
 		if strings.HasPrefix(value, prefix) {
@@ -711,11 +684,11 @@ func docxHeadingLevel(properties *xmlNode) int {
 	return 0
 }
 
-func docxOnOff(node *xmlNode) bool {
+func docxOnOff(node *core.XMLNode) bool {
 	if node == nil {
 		return false
 	}
-	switch strings.ToLower(node.attr("val")) {
+	switch strings.ToLower(node.Attr("val")) {
 	case "0", "false", "off", "no":
 		return false
 	default:
@@ -723,42 +696,17 @@ func docxOnOff(node *xmlNode) bool {
 	}
 }
 
-func docxImageAltText(container *xmlNode) string {
+func docxImageAltText(container *core.XMLNode) string {
 	for _, elementName := range []string{"docPr", "cNvPr", "shape"} {
-		for _, node := range container.descendants(elementName) {
+		for _, node := range container.Descendants(elementName) {
 			for _, attribute := range []string{"descr", "title", "alt", "name"} {
-				if value := strings.TrimSpace(node.attr(attribute)); value != "" {
+				if value := strings.TrimSpace(node.Attr(attribute)); value != "" {
 					return value
 				}
 			}
 		}
 	}
 	return "image"
-}
-
-func imageMIMEType(name string, data []byte) string {
-	switch strings.ToLower(path.Ext(name)) {
-	case ".png":
-		return "image/png"
-	case ".jpg", ".jpeg":
-		return "image/jpeg"
-	case ".gif":
-		return "image/gif"
-	case ".svg":
-		return "image/svg+xml"
-	case ".webp":
-		return "image/webp"
-	case ".bmp", ".dib":
-		return "image/bmp"
-	case ".tif", ".tiff":
-		return "image/tiff"
-	case ".emf":
-		return "image/x-emf"
-	case ".wmf":
-		return "image/wmf"
-	default:
-		return http.DetectContentType(data)
-	}
 }
 
 func escapeDOCXMarkdownText(value string) string {
@@ -772,8 +720,8 @@ func escapeDOCXMarkdownText(value string) string {
 	return replacer.Replace(value)
 }
 
-func renderDOCXSymbol(node *xmlNode) string {
-	value := strings.TrimPrefix(node.attr("char"), "0x")
+func renderDOCXSymbol(node *core.XMLNode) string {
+	value := strings.TrimPrefix(node.Attr("char"), "0x")
 	data, err := hex.DecodeString(value)
 	if err != nil || len(data) == 0 {
 		return ""

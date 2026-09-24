@@ -1,10 +1,12 @@
-package markdown
+package email
 
 import (
 	"bytes"
 	"context"
 	"encoding/base64"
 	"fmt"
+	"github.com/scoming-dev/tools/markdown/internal/core"
+	"github.com/scoming-dev/tools/markdown/internal/text"
 	"io"
 	"mime"
 	"mime/multipart"
@@ -15,19 +17,20 @@ import (
 )
 
 type emlConverter struct {
-	engine *MarkItDown
+	settings *core.Settings
 }
 
-func newEMLConverter(engine *MarkItDown) Converter {
-	converter := &emlConverter{engine: engine}
-	return newExtensionConverter(
+// NewConverter builds the RFC 822 email converter.
+func NewConverter(settings *core.Settings) core.Converter {
+	converter := &emlConverter{settings: settings}
+	return core.NewExtensionConverter(
 		[]string{".eml"},
 		[]string{"message/rfc822"},
 		converter.convert,
 	)
 }
 
-func (converter *emlConverter) convert(ctx context.Context, data []byte, _ StreamInfo) (*Result, error) {
+func (converter *emlConverter) convert(ctx context.Context, data []byte, _ core.StreamInfo) (*core.Result, error) {
 	message, err := mail.ReadMessage(bytes.NewReader(data))
 	if err != nil {
 		return nil, fmt.Errorf("markdown: parse email: %w", err)
@@ -43,12 +46,12 @@ func (converter *emlConverter) convert(ctx context.Context, data []byte, _ Strea
 	if err != nil {
 		return nil, err
 	}
-	return &Result{Title: subject, Markdown: joinMarkdownBlocks(body), Metadata: metadata}, nil
+	return &core.Result{Title: subject, Markdown: core.JoinBlocks(body), Metadata: metadata}, nil
 }
 
 func (converter *emlConverter) convertMIMEPart(ctx context.Context, header mail.Header, reader io.Reader, depth int) ([]string, error) {
 	if depth > 16 {
-		return nil, fmt.Errorf("%w: email MIME nesting is too deep", ErrArchiveLimit)
+		return nil, fmt.Errorf("%w: email MIME nesting is too deep", core.ErrArchiveLimit)
 	}
 	mediaType, params, _ := mime.ParseMediaType(header.Get("Content-Type"))
 	if mediaType == "" {
@@ -77,7 +80,7 @@ func (converter *emlConverter) convertMIMEPart(ctx context.Context, header mail.
 	}
 
 	decoded := decodeMIMEBody(reader, header.Get("Content-Transfer-Encoding"))
-	data, err := readLimited(decoded, converter.engine.maxArchiveFileSize)
+	data, err := core.ReadLimited(decoded, converter.settings.MaxArchiveFileSize)
 	if err != nil {
 		return nil, err
 	}
@@ -85,7 +88,7 @@ func (converter *emlConverter) convertMIMEPart(ctx context.Context, header mail.
 	case "text/plain":
 		return []string{strings.TrimSpace(string(data))}, nil
 	case "text/html":
-		result, err := newHTMLConverter().Convert(ctx, data, StreamInfo{Extension: ".html", MIMEType: mediaType})
+		result, err := text.NewHTMLConverter().Convert(ctx, data, core.StreamInfo{Extension: ".html", MIMEType: mediaType})
 		if err != nil {
 			return nil, err
 		}
@@ -101,20 +104,17 @@ func (converter *emlConverter) convertMIMEPart(ctx context.Context, header mail.
 		if name == "" {
 			name = "email-image"
 		}
-		handler := converter.engine.imageHandler
-		if handler == nil {
-			handler = DataURIImageHandler
-		}
-		imageURL, err := handler(ctx, Image{Name: name, MIMEType: mediaType, AltText: name, Data: data})
+		handler := converter.settings.ImageHandlerOrDefault()
+		imageURL, err := handler(ctx, core.Image{Name: name, MIMEType: mediaType, AltText: name, Data: data})
 		if err != nil {
 			return nil, err
 		}
-		return []string{markdownImage(name, imageURL)}, nil
+		return []string{core.MarkdownImage(name, imageURL)}, nil
 	}
 	if name == "" {
 		return nil, nil
 	}
-	result, err := converter.engine.convertData(ctx, data, StreamInfo{Name: name, Extension: filepath.Ext(name), MIMEType: mediaType})
+	result, err := converter.settings.Convert(ctx, data, core.StreamInfo{Name: name, Extension: filepath.Ext(name), MIMEType: mediaType})
 	if err != nil {
 		return nil, nil
 	}

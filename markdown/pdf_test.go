@@ -3,111 +3,107 @@ package markdown
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"fmt"
 	"strings"
 	"testing"
 )
 
-func TestPDFUsesGoFitzLuteFallbackWhenMinerUIsNotConfigured(t *testing.T) {
+// ---- PDF end-to-end conversion --------------------------------------------
+
+func TestPDFConvertsTextLocally(t *testing.T) {
 	result, err := New().ConvertReader(
 		context.Background(),
-		bytes.NewReader(minimalTextPDF("Fallback PDF body")),
+		bytes.NewReader(minimalTextPDF("Local PDF body")),
 		StreamInfo{Name: "report.pdf"},
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(result.Markdown, "Fallback PDF body") {
-		t.Fatalf("fallback Markdown did not include PDF text:\n%s", result.Markdown)
+	if !strings.Contains(result.Markdown, "Local PDF body") {
+		t.Fatalf("Markdown did not include PDF text:\n%s", result.Markdown)
 	}
-	if len(result.Warnings) != 1 || !strings.Contains(result.Warnings[0], "MinerU is not configured") {
-		t.Fatalf("fallback warning was not returned: %#v", result.Warnings)
+	if len(result.Warnings) != 0 {
+		t.Fatalf("a text PDF should not warn: %#v", result.Warnings)
 	}
-	if len(result.Metadata) != 2 || result.Metadata["pdf_content_type"] != "text" || result.Metadata["pdf_page_count"] != "1" {
-		t.Fatalf("unexpected fallback metadata: %#v", result.Metadata)
+	if result.Metadata["pdf_content_type"] != "text" || result.Metadata["pdf_page_count"] != "1" {
+		t.Fatalf("unexpected metadata: %#v", result.Metadata)
 	}
 }
 
-func TestPDFDetectsImagePDFWhenNoTextIsExtracted(t *testing.T) {
-	result, err := New().ConvertReader(
+func TestPDFRendersPageWithoutTextOrImages(t *testing.T) {
+	var rendered Image
+	result, err := New(
+		WithPDFOptions(PDFOptions{RenderDPI: 96}),
+		WithImageHandler(func(_ context.Context, image Image) (string, error) {
+			rendered = image
+			return "assets/" + image.Name, nil
+		}),
+	).ConvertReader(
 		context.Background(),
 		bytes.NewReader(minimalTextPDF("")),
-		StreamInfo{Name: "scan.pdf"},
+		StreamInfo{Name: "vector.pdf"},
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Metadata) != 2 || result.Metadata["pdf_content_type"] != "image" || result.Metadata["pdf_page_count"] != "1" {
+	if result.Metadata["pdf_content_type"] != "image" {
 		t.Fatalf("PDF should be detected as image-only: %#v", result.Metadata)
 	}
+	if rendered.Name != "pdf-page-1.jpg" || len(rendered.Data) == 0 {
+		t.Fatalf("page was not rendered as a picture: %#v", rendered)
+	}
+	if !bytes.HasPrefix(rendered.Data, []byte{0xFF, 0xD8}) {
+		t.Fatalf("a rendered page should default to JPEG: %x", rendered.Data[:2])
+	}
+	if !strings.Contains(result.Markdown, "assets/pdf-page-1.jpg") {
+		t.Fatalf("rendered page was not linked: %q", result.Markdown)
+	}
+	if result.Metadata["pdf_rendered_pages"] != "1" {
+		t.Fatalf("rendered page was not counted: %#v", result.Metadata)
+	}
+	if len(result.Warnings) == 0 {
+		t.Fatal("rendering a page should be reported as a warning")
+	}
 }
 
-func TestPDFExternalizesDataURIImagesBeforeMarkdown(t *testing.T) {
-	imageData := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}
-	called := false
-	html, err := externalizePDFHTMLImages(
+func TestPDFRendersPageAsJPEG(t *testing.T) {
+	var rendered Image
+	_, err := New(
+		WithPDFOptions(PDFOptions{RenderFormat: PDFImageFormatJPEG, JPEGQuality: 70, RenderDPI: 72}),
+		WithImageHandler(func(_ context.Context, image Image) (string, error) {
+			rendered = image
+			return image.Name, nil
+		}),
+	).ConvertReader(
 		context.Background(),
-		`<html><body><p>Chart</p><img alt="chart" src="data:image/png;base64,`+base64.StdEncoding.EncodeToString(imageData)+`"></body></html>`,
-		2,
-		func(_ context.Context, image Image) (string, error) {
-			called = true
-			if image.Name != "pdf-page-2-image-1.png" || image.MIMEType != "image/png" || image.AltText != "chart" {
-				t.Fatalf("unexpected image metadata: %#v", image)
-			}
-			if !bytes.Equal(image.Data, imageData) {
-				t.Fatalf("unexpected image data: %v", image.Data)
-			}
-			return "assets/pdf-page-2-image-1.png", nil
-		},
+		bytes.NewReader(minimalTextPDF("")),
+		StreamInfo{Name: "vector.pdf"},
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !called {
-		t.Fatal("image handler was not called")
+	if rendered.MIMEType != "image/jpeg" || rendered.Name != "pdf-page-1.jpg" {
+		t.Fatalf("expected a JPEG page render: %#v", rendered)
 	}
-	if strings.Contains(html, "data:image/") || !strings.Contains(html, `src="assets/pdf-page-2-image-1.png"`) {
-		t.Fatalf("data URI image was not externalized:\n%s", html)
-	}
-	markdown, err := pdfHTMLToMarkdown(newPDFLuteEngine(), html)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(markdown, "data:image/") || !strings.Contains(markdown, "assets/pdf-page-2-image-1.png") {
-		t.Fatalf("Markdown should use external image link:\n%s", markdown)
+	if !bytes.HasPrefix(rendered.Data, []byte{0xFF, 0xD8}) {
+		t.Fatalf("rendered data is not JPEG: %x", rendered.Data[:2])
 	}
 }
 
-func TestPDFPageWithManyImagesAndNoTextRendersWholePage(t *testing.T) {
-	html := `<html><body><img src="data:image/png;base64,a"><img src="data:image/png;base64,b"></body></html>`
-	if !shouldRenderPDFPageAsImage("", html) {
-		t.Fatal("expected image-only page with multiple image fragments to render as one page image")
-	}
-	if shouldRenderPDFPageAsImage("caption", html) {
-		t.Fatal("page with text should keep HTML extraction path")
-	}
-	if shouldRenderPDFPageAsImage("", `<html><body><img src="data:image/png;base64,a"></body></html>`) {
-		t.Fatal("single image page should not be forced through whole-page rendering")
-	}
-}
-
-func TestPDFAlwaysUsesConfiguredHandler(t *testing.T) {
-	called := false
-	converter := New(WithPDFHandler(func(_ context.Context, data []byte, info StreamInfo, _ ImageHandler) (*Result, error) {
-		called = bytes.Equal(data, []byte("pdf")) && info.Name == "report.pdf"
-		return &Result{Markdown: "MinerU output"}, nil
-	}))
-	result, err := converter.ConvertReader(
+func TestPDFOptionDisablesPageRenderFallback(t *testing.T) {
+	result, err := New(WithPDFOptions(PDFOptions{DisablePageRenderFallback: true})).ConvertReader(
 		context.Background(),
-		bytes.NewReader([]byte("pdf")),
-		StreamInfo{Name: "report.pdf"},
+		bytes.NewReader(minimalTextPDF("")),
+		StreamInfo{Name: "vector.pdf"},
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !called || result.Markdown != "MinerU output" {
-		t.Fatalf("PDF handler was not used: called=%v result=%#v", called, result)
+	if strings.TrimSpace(result.Markdown) != "" {
+		t.Fatalf("expected an empty conversion, got %q", result.Markdown)
+	}
+	if result.Metadata["pdf_rendered_pages"] != "0" {
+		t.Fatalf("no page should have been rendered: %#v", result.Metadata)
 	}
 }
 

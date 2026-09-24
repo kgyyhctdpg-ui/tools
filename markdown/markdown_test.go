@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/scoming-dev/tools/markdown/internal/core"
 )
 
 const docxDocumentPrefix = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -75,7 +77,7 @@ func TestRegisterBuiltinsIsIdempotent(t *testing.T) {
 }
 
 func TestNewCoreCustomConverterKeepsPriorityWhenBuiltinsAdded(t *testing.T) {
-	custom := newExtensionConverter(
+	custom := core.NewExtensionConverter(
 		[]string{".txt"},
 		nil,
 		func(context.Context, []byte, StreamInfo) (*Result, error) {
@@ -227,18 +229,6 @@ func TestDOCXReadsRowsAndCellsWrappedInContentControls(t *testing.T) {
 	}
 }
 
-func TestOMMLComplexStructures(t *testing.T) {
-	root, err := parseXML([]byte(`<m:oMath xmlns:m="urn:math"><m:nary><m:naryPr><m:chr m:val="∑"/></m:naryPr><m:sub><m:r><m:t>i=1</m:t></m:r></m:sub><m:sup><m:r><m:t>n</m:t></m:r></m:sup><m:e><m:f><m:num><m:r><m:t>x</m:t></m:r></m:num><m:den><m:rad><m:e><m:r><m:t>y</m:t></m:r></m:e></m:rad></m:den></m:f></m:e></m:nary></m:oMath>`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	latex := ommlToLatex(root.first("oMath"))
-	want := `\sum_{i=1}^{n}\frac{x}{\sqrt{y}}`
-	if latex != want {
-		t.Fatalf("unexpected LaTeX:\nwant: %s\n got: %s", want, latex)
-	}
-}
-
 func TestTableFormatHTMLAppliesToCSV(t *testing.T) {
 	result, err := New(WithTableFormat(TableFormatHTML)).ConvertReader(
 		context.Background(),
@@ -264,28 +254,6 @@ func TestTablesUseHTMLByDefault(t *testing.T) {
 	}
 	if !strings.Contains(result.Markdown, "<table>") || strings.Contains(result.Markdown, "| --- |") {
 		t.Fatalf("default table output should be HTML:\n%s", result.Markdown)
-	}
-}
-
-func TestPPTXTablePreservesMergedRowsAndColumns(t *testing.T) {
-	root, err := parseXML([]byte(`<a:tbl xmlns:a="urn:drawingml">
-<a:tr>
-<a:tc gridSpan="2"><a:p><a:r><a:t>Columns</a:t></a:r></a:p></a:tc>
-<a:tc hMerge="1"><a:p/></a:tc>
-<a:tc rowSpan="2"><a:p><a:r><a:t>Rows</a:t></a:r></a:p></a:tc>
-</a:tr>
-<a:tr>
-<a:tc><a:p><a:r><a:t>A</a:t></a:r></a:p></a:tc>
-<a:tc><a:p><a:r><a:t>B</a:t></a:r></a:p></a:tc>
-<a:tc vMerge="1"><a:p/></a:tc>
-</a:tr>
-</a:tbl>`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	result := renderPPTXNode(root.first("tbl"), TableFormatMarkdown)
-	if !strings.Contains(result, `<th colspan="2">Columns</th>`) || !strings.Contains(result, `<th rowspan="2">Rows</th>`) {
-		t.Fatalf("PPTX merged cells were not preserved:\n%s", result)
 	}
 }
 

@@ -1,4 +1,4 @@
-package markdown
+package core
 
 import (
 	"bytes"
@@ -32,7 +32,7 @@ func NewFileImageHandler(directory, linkPrefix string) ImageHandler {
 		if strings.TrimSpace(directory) == "" {
 			return "", errors.New("markdown: image directory is empty")
 		}
-		name := safeImageFileName(image.Name, image.MIMEType)
+		name := SafeImageFileName(image.Name, image.MIMEType)
 
 		mu.Lock()
 		defer mu.Unlock()
@@ -41,7 +41,7 @@ func NewFileImageHandler(directory, linkPrefix string) ImageHandler {
 		}
 		if !contentIndexed {
 			var err error
-			contentFiles, err = indexImageFilesByContent(directory)
+			contentFiles, err = IndexImageFilesByContent(directory)
 			if err != nil {
 				return "", err
 			}
@@ -51,28 +51,28 @@ func NewFileImageHandler(directory, linkPrefix string) ImageHandler {
 		if existingName, ok := contentFiles[digest]; ok {
 			existing, err := os.ReadFile(filepath.Join(directory, existingName))
 			if err == nil && bytes.Equal(existing, image.Data) {
-				return imageFileLink(linkPrefix, existingName), nil
+				return ImageFileLink(linkPrefix, existingName), nil
 			}
 			delete(contentFiles, digest)
 		}
-		name, err := availableImageFileName(directory, name, image.Data)
+		name, err := AvailableImageFileName(directory, name, image.Data)
 		if err != nil {
 			return "", err
 		}
 		target := filepath.Join(directory, name)
 		if existing, readErr := os.ReadFile(target); readErr == nil && bytes.Equal(existing, image.Data) {
 			contentFiles[digest] = name
-			return imageFileLink(linkPrefix, name), nil
+			return ImageFileLink(linkPrefix, name), nil
 		}
-		if err := writeImageFile(target, image.Data); err != nil {
+		if err := WriteImageFile(target, image.Data); err != nil {
 			return "", err
 		}
 		contentFiles[digest] = name
-		return imageFileLink(linkPrefix, name), nil
+		return ImageFileLink(linkPrefix, name), nil
 	}
 }
 
-func indexImageFilesByContent(directory string) (map[[sha256.Size]byte]string, error) {
+func IndexImageFilesByContent(directory string) (map[[sha256.Size]byte]string, error) {
 	files := make(map[[sha256.Size]byte]string)
 	entries, err := os.ReadDir(directory)
 	if err != nil {
@@ -94,14 +94,7 @@ func indexImageFilesByContent(directory string) (map[[sha256.Size]byte]string, e
 	return files, nil
 }
 
-// WithAssetsDirectory stores extracted images as files instead of data URIs.
-// linkPrefix is written into Markdown and is usually the directory name
-// relative to the Markdown output file.
-func WithAssetsDirectory(directory, linkPrefix string) Option {
-	return WithImageHandler(NewFileImageHandler(directory, linkPrefix))
-}
-
-func safeImageFileName(name, mimeType string) string {
+func SafeImageFileName(name, mimeType string) string {
 	name = filepath.Base(strings.ReplaceAll(strings.TrimSpace(name), "\\", "/"))
 	name = strings.Map(func(character rune) rune {
 		if unicode.IsControl(character) || strings.ContainsRune(`/\\:*?"<>|`, character) {
@@ -113,12 +106,12 @@ func safeImageFileName(name, mimeType string) string {
 		name = "image"
 	}
 	if filepath.Ext(name) == "" {
-		name += imageExtension(mimeType)
+		name += ImageExtension(mimeType)
 	}
 	return name
 }
 
-func imageExtension(mimeType string) string {
+func ImageExtension(mimeType string) string {
 	switch strings.ToLower(strings.TrimSpace(mimeType)) {
 	case "image/jpeg":
 		return ".jpg"
@@ -141,7 +134,7 @@ func imageExtension(mimeType string) string {
 	return ".bin"
 }
 
-func availableImageFileName(directory, name string, data []byte) (string, error) {
+func AvailableImageFileName(directory, name string, data []byte) (string, error) {
 	extension := filepath.Ext(name)
 	base := strings.TrimSuffix(name, extension)
 	for index := 1; ; index++ {
@@ -162,7 +155,7 @@ func availableImageFileName(directory, name string, data []byte) (string, error)
 	}
 }
 
-func writeImageFile(target string, data []byte) error {
+func WriteImageFile(target string, data []byte) error {
 	temporary, err := os.CreateTemp(filepath.Dir(target), ".markdown-image-*")
 	if err != nil {
 		return fmt.Errorf("markdown: create image file %q: %w", target, err)
@@ -186,7 +179,7 @@ func writeImageFile(target string, data []byte) error {
 	return nil
 }
 
-func imageFileLink(prefix, name string) string {
+func ImageFileLink(prefix, name string) string {
 	name = url.PathEscape(name)
 	prefix = strings.TrimRight(filepath.ToSlash(strings.TrimSpace(prefix)), "/")
 	if prefix == "" || prefix == "." {

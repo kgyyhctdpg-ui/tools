@@ -1,9 +1,10 @@
-package markdown
+package xlsx
 
 import (
 	"bytes"
 	"context"
 	"fmt"
+	"github.com/scoming-dev/tools/markdown/internal/core"
 	"html"
 	"strconv"
 	"strings"
@@ -11,11 +12,12 @@ import (
 	"github.com/xuri/excelize/v2"
 )
 
-func newXLSXConverter() Converter {
-	return newExtensionConverter(
+// NewConverter builds the XLSX converter.
+func NewConverter() core.Converter {
+	return core.NewExtensionConverter(
 		[]string{".xlsx", ".xlsm", ".xltx", ".xltm"},
 		[]string{"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/vnd.ms-excel.sheet.macroenabled.12"},
-		func(ctx context.Context, data []byte, _ StreamInfo) (*Result, error) {
+		func(ctx context.Context, data []byte, _ core.StreamInfo) (*core.Result, error) {
 			workbook, err := excelize.OpenReader(bytes.NewReader(data))
 			if err != nil {
 				return nil, fmt.Errorf("markdown: open spreadsheet: %w", err)
@@ -35,19 +37,19 @@ func newXLSXConverter() Converter {
 				if err != nil {
 					return nil, fmt.Errorf("markdown: read merged cells in %q: %w", sheet, err)
 				}
-				config, _ := ctx.Value(conversionConfigKey{}).(conversionConfig)
-				table := markdownTable(rows)
+				tableFormat := core.TableFormatFromContext(ctx)
+				table := core.MarkdownTable(rows)
 				if len(merges) > 0 {
 					table = renderXLSXHTMLTable(rows, merges)
-				} else if config.tableFormat == TableFormatHTML {
-					table = htmlTable(rows)
+				} else if tableFormat == core.TableFormatHTML {
+					table = core.HTMLTable(rows)
 				}
 				if table == "" {
 					continue
 				}
 				blocks = append(blocks, "## "+sheet+"\n\n"+table)
 			}
-			return &Result{Markdown: joinMarkdownBlocks(blocks)}, nil
+			return &core.Result{Markdown: core.JoinBlocks(blocks)}, nil
 		},
 	)
 }

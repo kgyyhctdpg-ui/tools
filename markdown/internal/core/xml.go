@@ -1,4 +1,4 @@
-package markdown
+package core
 
 import (
 	"archive/zip"
@@ -13,19 +13,19 @@ import (
 	"strings"
 )
 
-type xmlNode struct {
+type XMLNode struct {
 	Name     string
 	Space    string
 	Attrs    map[string]string
 	NSAttrs  map[string]string
 	Text     string
-	Children []*xmlNode
+	Children []*XMLNode
 }
 
-func parseXML(data []byte) (*xmlNode, error) {
+func ParseXML(data []byte) (*XMLNode, error) {
 	decoder := xml.NewDecoder(bytes.NewReader(data))
-	root := &xmlNode{Name: "#document", Attrs: map[string]string{}, NSAttrs: map[string]string{}}
-	stack := []*xmlNode{root}
+	root := &XMLNode{Name: "#document", Attrs: map[string]string{}, NSAttrs: map[string]string{}}
+	stack := []*XMLNode{root}
 	for {
 		token, err := decoder.Token()
 		if err == io.EOF {
@@ -36,7 +36,7 @@ func parseXML(data []byte) (*xmlNode, error) {
 		}
 		switch value := token.(type) {
 		case xml.StartElement:
-			node := &xmlNode{Name: value.Name.Local, Space: value.Name.Space, Attrs: map[string]string{}, NSAttrs: map[string]string{}}
+			node := &XMLNode{Name: value.Name.Local, Space: value.Name.Space, Attrs: map[string]string{}, NSAttrs: map[string]string{}}
 			for _, attribute := range value.Attr {
 				node.Attrs[attribute.Name.Local] = attribute.Value
 				node.NSAttrs[attribute.Name.Space+"|"+attribute.Name.Local] = attribute.Value
@@ -55,7 +55,7 @@ func parseXML(data []byte) (*xmlNode, error) {
 	return root, nil
 }
 
-func (node *xmlNode) child(name string) *xmlNode {
+func (node *XMLNode) Child(name string) *XMLNode {
 	if node == nil {
 		return nil
 	}
@@ -67,11 +67,11 @@ func (node *xmlNode) child(name string) *xmlNode {
 	return nil
 }
 
-func (node *xmlNode) children(name string) []*xmlNode {
+func (node *XMLNode) ChildrenNamed(name string) []*XMLNode {
 	if node == nil {
 		return nil
 	}
-	result := make([]*xmlNode, 0)
+	result := make([]*XMLNode, 0)
 	for _, child := range node.Children {
 		if child.Name == name {
 			result = append(result, child)
@@ -80,7 +80,7 @@ func (node *xmlNode) children(name string) []*xmlNode {
 	return result
 }
 
-func (node *xmlNode) first(name string) *xmlNode {
+func (node *XMLNode) First(name string) *XMLNode {
 	if node == nil {
 		return nil
 	}
@@ -88,17 +88,17 @@ func (node *xmlNode) first(name string) *xmlNode {
 		return node
 	}
 	for _, child := range node.Children {
-		if result := child.first(name); result != nil {
+		if result := child.First(name); result != nil {
 			return result
 		}
 	}
 	return nil
 }
 
-func (node *xmlNode) descendants(name string) []*xmlNode {
-	result := make([]*xmlNode, 0)
-	var walk func(*xmlNode)
-	walk = func(current *xmlNode) {
+func (node *XMLNode) Descendants(name string) []*XMLNode {
+	result := make([]*XMLNode, 0)
+	var walk func(*XMLNode)
+	walk = func(current *XMLNode) {
 		if current == nil {
 			return
 		}
@@ -113,20 +113,20 @@ func (node *xmlNode) descendants(name string) []*xmlNode {
 	return result
 }
 
-func (node *xmlNode) attr(name string) string {
+func (node *XMLNode) Attr(name string) string {
 	if node == nil {
 		return ""
 	}
 	return node.Attrs[name]
 }
 
-func (node *xmlNode) textContent() string {
+func (node *XMLNode) TextContent() string {
 	if node == nil {
 		return ""
 	}
 	var out strings.Builder
-	var walk func(*xmlNode)
-	walk = func(current *xmlNode) {
+	var walk func(*XMLNode)
+	walk = func(current *XMLNode) {
 		out.WriteString(current.Text)
 		for _, child := range current.Children {
 			walk(child)
@@ -136,7 +136,7 @@ func (node *xmlNode) textContent() string {
 	return out.String()
 }
 
-func openZip(data []byte) (*zip.Reader, error) {
+func OpenZip(data []byte) (*zip.Reader, error) {
 	reader, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
 		return nil, fmt.Errorf("markdown: open zip container: %w", err)
@@ -144,7 +144,7 @@ func openZip(data []byte) (*zip.Reader, error) {
 	return reader, nil
 }
 
-func readZipEntry(file *zip.File, maxSize int64) ([]byte, error) {
+func ReadZipEntry(file *zip.File, maxSize int64) ([]byte, error) {
 	if maxSize > 0 && file.UncompressedSize64 > uint64(maxSize) {
 		return nil, fmt.Errorf("%w: %s", ErrArchiveLimit, file.Name)
 	}
@@ -153,15 +153,15 @@ func readZipEntry(file *zip.File, maxSize int64) ([]byte, error) {
 		return nil, err
 	}
 	defer reader.Close()
-	data, err := readLimited(reader, maxSize)
+	data, err := ReadLimited(reader, maxSize)
 	if errors.Is(err, ErrInputTooLarge) {
 		return nil, fmt.Errorf("%w: %s", ErrArchiveLimit, file.Name)
 	}
 	return data, err
 }
 
-func officeParts(data []byte, wanted func(string) bool) (map[string][]byte, error) {
-	reader, err := openZip(data)
+func OfficeParts(data []byte, wanted func(string) bool) (map[string][]byte, error) {
+	reader, err := OpenZip(data)
 	if err != nil {
 		return nil, err
 	}
@@ -174,7 +174,7 @@ func officeParts(data []byte, wanted func(string) bool) (map[string][]byte, erro
 		if file.FileInfo().IsDir() || !wanted(name) {
 			continue
 		}
-		content, err := readZipEntry(file, 64<<20)
+		content, err := ReadZipEntry(file, 64<<20)
 		if err != nil {
 			return nil, err
 		}
@@ -183,21 +183,21 @@ func officeParts(data []byte, wanted func(string) bool) (map[string][]byte, erro
 	return parts, nil
 }
 
-type relationship struct {
+type Relationship struct {
 	ID       string
 	Target   string
 	Type     string
 	External bool
 }
 
-func parseRelationships(data []byte) map[string]relationship {
-	result := make(map[string]relationship)
-	root, err := parseXML(data)
+func ParseRelationships(data []byte) map[string]Relationship {
+	result := make(map[string]Relationship)
+	root, err := ParseXML(data)
 	if err != nil {
 		return result
 	}
-	for _, node := range root.descendants("Relationship") {
-		item := relationship{ID: node.attr("Id"), Target: node.attr("Target"), Type: node.attr("Type"), External: strings.EqualFold(node.attr("TargetMode"), "External")}
+	for _, node := range root.Descendants("Relationship") {
+		item := Relationship{ID: node.Attr("Id"), Target: node.Attr("Target"), Type: node.Attr("Type"), External: strings.EqualFold(node.Attr("TargetMode"), "External")}
 		if item.ID != "" {
 			result[item.ID] = item
 		}
@@ -205,24 +205,24 @@ func parseRelationships(data []byte) map[string]relationship {
 	return result
 }
 
-func coreProperties(data []byte) (string, map[string]string) {
+func CoreProperties(data []byte) (string, map[string]string) {
 	metadata := make(map[string]string)
-	root, err := parseXML(data)
+	root, err := ParseXML(data)
 	if err != nil {
 		return "", metadata
 	}
 	for xmlName, key := range map[string]string{"title": "title", "creator": "author", "subject": "subject", "description": "description", "keywords": "keywords", "created": "created", "modified": "modified"} {
-		if node := root.first(xmlName); node != nil {
-			metadata[key] = strings.TrimSpace(node.textContent())
+		if node := root.First(xmlName); node != nil {
+			metadata[key] = strings.TrimSpace(node.TextContent())
 		}
 	}
 	return metadata["title"], metadata
 }
 
-func naturalXMLPartOrder(names []string) {
+func NaturalXMLPartOrder(names []string) {
 	sort.Slice(names, func(i, j int) bool {
-		left, leftOK := trailingNumber(names[i])
-		right, rightOK := trailingNumber(names[j])
+		left, leftOK := TrailingNumber(names[i])
+		right, rightOK := TrailingNumber(names[j])
 		if leftOK && rightOK && left != right {
 			return left < right
 		}
@@ -230,7 +230,7 @@ func naturalXMLPartOrder(names []string) {
 	})
 }
 
-func trailingNumber(name string) (int, bool) {
+func TrailingNumber(name string) (int, bool) {
 	base := strings.TrimSuffix(path.Base(name), path.Ext(name))
 	index := len(base)
 	for index > 0 && base[index-1] >= '0' && base[index-1] <= '9' {

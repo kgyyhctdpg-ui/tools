@@ -1,11 +1,12 @@
-package markdown
+package docx
 
 import (
+	"github.com/scoming-dev/tools/markdown/internal/core"
 	"strings"
 	"unicode/utf8"
 )
 
-func ommlToLatex(node *xmlNode) string {
+func ommlToLatex(node *core.XMLNode) string {
 	if node == nil {
 		return ""
 	}
@@ -63,7 +64,7 @@ func ommlToLatex(node *xmlNode) string {
 	return ommlSequence(node.Children)
 }
 
-func ommlSequence(nodes []*xmlNode) string {
+func ommlSequence(nodes []*core.XMLNode) string {
 	var out strings.Builder
 	for _, node := range nodes {
 		out.WriteString(ommlToLatex(node))
@@ -71,7 +72,7 @@ func ommlSequence(nodes []*xmlNode) string {
 	return out.String()
 }
 
-func ommlRun(node *xmlNode) string {
+func ommlRun(node *core.XMLNode) string {
 	var out strings.Builder
 	for _, child := range node.Children {
 		if child.Name == "t" {
@@ -85,10 +86,10 @@ func ommlRun(node *xmlNode) string {
 	return out.String()
 }
 
-func ommlFraction(node *xmlNode) string {
+func ommlFraction(node *core.XMLNode) string {
 	numerator := ommlChild(node, "num")
 	denominator := ommlChild(node, "den")
-	fractionType := ommlPropertyValue(node.child("fPr"), "type")
+	fractionType := ommlPropertyValue(node.Child("fPr"), "type")
 	switch fractionType {
 	case "lin":
 		return "{" + numerator + "}/{" + denominator + "}"
@@ -99,35 +100,35 @@ func ommlFraction(node *xmlNode) string {
 	}
 }
 
-func ommlRadical(node *xmlNode) string {
+func ommlRadical(node *core.XMLNode) string {
 	degree := ommlChild(node, "deg")
 	content := ommlChild(node, "e")
-	hidden := ommlPropertyEnabled(node.child("radPr"), "degHide")
+	hidden := ommlPropertyEnabled(node.Child("radPr"), "degHide")
 	if degree == "" || hidden {
 		return "\\sqrt{" + content + "}"
 	}
 	return "\\sqrt[" + degree + "]{" + content + "}"
 }
 
-func ommlNary(node *xmlNode) string {
-	symbol := ommlPropertyValue(node.child("naryPr"), "chr")
+func ommlNary(node *core.XMLNode) string {
+	symbol := ommlPropertyValue(node.Child("naryPr"), "chr")
 	if symbol == "" {
 		symbol = "∫"
 	}
 	operator := latexNaryOperator(symbol)
 	subscript := ""
 	superscript := ""
-	if !ommlPropertyEnabled(node.child("naryPr"), "subHide") {
+	if !ommlPropertyEnabled(node.Child("naryPr"), "subHide") {
 		subscript = ommlChild(node, "sub")
 	}
-	if !ommlPropertyEnabled(node.child("naryPr"), "supHide") {
+	if !ommlPropertyEnabled(node.Child("naryPr"), "supHide") {
 		superscript = ommlChild(node, "sup")
 	}
 	return latexScripts(operator, subscript, superscript) + ommlChild(node, "e")
 }
 
-func ommlAccent(node *xmlNode) string {
-	character := ommlPropertyValue(node.child("accPr"), "chr")
+func ommlAccent(node *core.XMLNode) string {
+	character := ommlPropertyValue(node.Child("accPr"), "chr")
 	command := map[string]string{
 		"̂": "hat", "^": "hat", "̄": "bar", "¯": "bar", "~": "tilde", "̃": "tilde",
 		"⃗": "vec", "→": "vec", "̇": "dot", ".": "dot", "̈": "ddot", "¨": "ddot",
@@ -139,8 +140,8 @@ func ommlAccent(node *xmlNode) string {
 	return "\\" + command + "{" + ommlChild(node, "e") + "}"
 }
 
-func ommlBar(node *xmlNode) string {
-	position := ommlPropertyValue(node.child("barPr"), "pos")
+func ommlBar(node *core.XMLNode) string {
+	position := ommlPropertyValue(node.Child("barPr"), "pos")
 	command := "overline"
 	if position == "bot" {
 		command = "underline"
@@ -148,8 +149,8 @@ func ommlBar(node *xmlNode) string {
 	return "\\" + command + "{" + ommlChild(node, "e") + "}"
 }
 
-func ommlDelimiter(node *xmlNode) string {
-	properties := node.child("dPr")
+func ommlDelimiter(node *core.XMLNode) string {
+	properties := node.Child("dPr")
 	begin := ommlPropertyValue(properties, "begChr")
 	end := ommlPropertyValue(properties, "endChr")
 	separator := ommlPropertyValue(properties, "sepChr")
@@ -171,11 +172,11 @@ func ommlDelimiter(node *xmlNode) string {
 	return "\\left" + latexDelimiter(begin) + strings.Join(arguments, "\\middle"+latexDelimiter(separator)) + "\\right" + latexDelimiter(end)
 }
 
-func ommlMatrix(node *xmlNode) string {
+func ommlMatrix(node *core.XMLNode) string {
 	rows := make([]string, 0)
-	for _, row := range node.children("mr") {
+	for _, row := range node.ChildrenNamed("mr") {
 		cells := make([]string, 0)
-		for _, cell := range row.children("e") {
+		for _, cell := range row.ChildrenNamed("e") {
 			cells = append(cells, ommlToLatex(cell))
 		}
 		rows = append(rows, strings.Join(cells, " & "))
@@ -183,15 +184,15 @@ func ommlMatrix(node *xmlNode) string {
 	return "\\begin{matrix}" + strings.Join(rows, " \\\\ ") + "\\end{matrix}"
 }
 
-func ommlEquationArray(node *xmlNode) string {
+func ommlEquationArray(node *core.XMLNode) string {
 	rows := make([]string, 0)
-	for _, row := range node.children("e") {
+	for _, row := range node.ChildrenNamed("e") {
 		rows = append(rows, ommlToLatex(row))
 	}
 	return "\\begin{aligned}" + strings.Join(rows, " \\\\ ") + "\\end{aligned}"
 }
 
-func ommlFunction(node *xmlNode) string {
+func ommlFunction(node *core.XMLNode) string {
 	name := strings.TrimSpace(ommlChild(node, "fName"))
 	argument := ommlChild(node, "e")
 	known := map[string]bool{
@@ -208,9 +209,9 @@ func ommlFunction(node *xmlNode) string {
 	return name + "\\left(" + argument + "\\right)"
 }
 
-func ommlGroupCharacter(node *xmlNode) string {
-	character := ommlPropertyValue(node.child("groupChrPr"), "chr")
-	position := ommlPropertyValue(node.child("groupChrPr"), "pos")
+func ommlGroupCharacter(node *core.XMLNode) string {
+	character := ommlPropertyValue(node.Child("groupChrPr"), "chr")
+	position := ommlPropertyValue(node.Child("groupChrPr"), "pos")
 	content := ommlChild(node, "e")
 	if character == "⏟" || position == "bot" {
 		return "\\underbrace{" + content + "}"
@@ -218,33 +219,33 @@ func ommlGroupCharacter(node *xmlNode) string {
 	return "\\overbrace{" + content + "}"
 }
 
-func ommlChild(node *xmlNode, name string) string {
+func ommlChild(node *core.XMLNode, name string) string {
 	if node == nil {
 		return ""
 	}
-	return ommlToLatex(node.child(name))
+	return ommlToLatex(node.Child(name))
 }
 
-func ommlPropertyValue(properties *xmlNode, name string) string {
+func ommlPropertyValue(properties *core.XMLNode, name string) string {
 	if properties == nil {
 		return ""
 	}
-	property := properties.child(name)
+	property := properties.Child(name)
 	if property == nil {
 		return ""
 	}
-	return property.attr("val")
+	return property.Attr("val")
 }
 
-func ommlPropertyEnabled(properties *xmlNode, name string) bool {
+func ommlPropertyEnabled(properties *core.XMLNode, name string) bool {
 	if properties == nil {
 		return false
 	}
-	property := properties.child(name)
+	property := properties.Child(name)
 	if property == nil {
 		return false
 	}
-	switch strings.ToLower(property.attr("val")) {
+	switch strings.ToLower(property.Attr("val")) {
 	case "0", "false", "off", "no":
 		return false
 	default:

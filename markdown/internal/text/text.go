@@ -1,4 +1,4 @@
-package markdown
+package text
 
 import (
 	"bytes"
@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
+	"github.com/scoming-dev/tools/markdown/internal/core"
 	"io"
 	"regexp"
 	"strconv"
@@ -15,37 +16,40 @@ import (
 	nethtml "golang.org/x/net/html"
 )
 
-func newTextConverter() Converter {
-	return newExtensionConverter(
+// NewTextConverter builds the plain-text converter.
+func NewTextConverter() core.Converter {
+	return core.NewExtensionConverter(
 		[]string{".txt", ".md", ".markdown", ".rst", ".log"},
 		[]string{"text/plain", "text/markdown"},
-		func(_ context.Context, data []byte, _ StreamInfo) (*Result, error) {
-			return &Result{Markdown: strings.TrimPrefix(string(data), "\ufeff")}, nil
+		func(_ context.Context, data []byte, _ core.StreamInfo) (*core.Result, error) {
+			return &core.Result{Markdown: strings.TrimPrefix(string(data), "\ufeff")}, nil
 		},
 	)
 }
 
-func newHTMLConverter() Converter {
-	return newExtensionConverter(
+// NewHTMLConverter builds the HTML converter.
+func NewHTMLConverter() core.Converter {
+	return core.NewExtensionConverter(
 		[]string{".html", ".htm", ".xhtml"},
 		[]string{"text/html", "application/xhtml+xml"},
-		func(ctx context.Context, data []byte, _ StreamInfo) (*Result, error) {
+		func(ctx context.Context, data []byte, _ core.StreamInfo) (*core.Result, error) {
 			source := strings.TrimPrefix(string(data), "\ufeff")
-			config, _ := ctx.Value(conversionConfigKey{}).(conversionConfig)
-			markdown, err := htmlToMarkdown(source, config.tableFormat)
+			tableFormat := core.TableFormatFromContext(ctx)
+			markdown, err := htmlToMarkdown(source, tableFormat)
 			if err != nil {
 				return nil, fmt.Errorf("markdown: convert html: %w", err)
 			}
-			return &Result{Title: htmlDocumentTitle(source), Markdown: markdown}, nil
+			return &core.Result{Title: htmlDocumentTitle(source), Markdown: markdown}, nil
 		},
 	)
 }
 
-func newCSVConverter() Converter {
-	return newExtensionConverter(
+// NewCSVConverter builds the CSV/TSV converter.
+func NewCSVConverter() core.Converter {
+	return core.NewExtensionConverter(
 		[]string{".csv", ".tsv"},
 		[]string{"text/csv", "text/tab-separated-values"},
-		func(ctx context.Context, data []byte, info StreamInfo) (*Result, error) {
+		func(ctx context.Context, data []byte, info core.StreamInfo) (*core.Result, error) {
 			reader := csv.NewReader(bytes.NewReader(bytes.TrimPrefix(data, []byte("\xef\xbb\xbf"))))
 			if info.Extension == ".tsv" || info.MIMEType == "text/tab-separated-values" {
 				reader.Comma = '\t'
@@ -55,20 +59,21 @@ func newCSVConverter() Converter {
 			if err != nil {
 				return nil, fmt.Errorf("markdown: parse %s: %w", info.Extension, err)
 			}
-			config, _ := ctx.Value(conversionConfigKey{}).(conversionConfig)
-			if config.tableFormat == TableFormatHTML {
-				return &Result{Markdown: htmlTable(rows)}, nil
+			tableFormat := core.TableFormatFromContext(ctx)
+			if tableFormat == core.TableFormatHTML {
+				return &core.Result{Markdown: core.HTMLTable(rows)}, nil
 			}
-			return &Result{Markdown: markdownTable(rows)}, nil
+			return &core.Result{Markdown: core.MarkdownTable(rows)}, nil
 		},
 	)
 }
 
-func newStructuredTextConverter() Converter {
-	return newExtensionConverter(
+// NewStructuredTextConverter builds the JSON/XML/YAML converter.
+func NewStructuredTextConverter() core.Converter {
+	return core.NewExtensionConverter(
 		[]string{".json", ".xml", ".yaml", ".yml"},
 		[]string{"application/json", "application/xml", "text/xml", "application/yaml", "text/yaml"},
-		func(_ context.Context, data []byte, info StreamInfo) (*Result, error) {
+		func(_ context.Context, data []byte, info core.StreamInfo) (*core.Result, error) {
 			content := strings.TrimPrefix(string(data), "\ufeff")
 			language := strings.TrimPrefix(info.Extension, ".")
 			switch info.Extension {
@@ -87,7 +92,7 @@ func newStructuredTextConverter() Converter {
 			case ".yml":
 				language = "yaml"
 			}
-			return &Result{Markdown: fencedCode(language, content)}, nil
+			return &core.Result{Markdown: core.FencedCode(language, content)}, nil
 		},
 	)
 }
@@ -126,7 +131,7 @@ func htmlDocumentTitle(source string) string {
 	return strings.TrimSpace(value)
 }
 
-func htmlToMarkdown(source string, tableFormat TableFormat) (string, error) {
+func htmlToMarkdown(source string, tableFormat core.TableFormat) (string, error) {
 	root, err := nethtml.Parse(strings.NewReader(source))
 	if err != nil {
 		return "", err
@@ -137,7 +142,7 @@ func htmlToMarkdown(source string, tableFormat TableFormat) (string, error) {
 	return strings.TrimSpace(markdown), nil
 }
 
-func renderHTMLNode(node *nethtml.Node, tableFormat TableFormat) string {
+func renderHTMLNode(node *nethtml.Node, tableFormat core.TableFormat) string {
 	if node == nil {
 		return ""
 	}
@@ -182,7 +187,7 @@ func renderHTMLNode(node *nethtml.Node, tableFormat TableFormat) string {
 		}
 		return fence + content + fence
 	case "pre":
-		return "\n\n" + fencedCode("", htmlRawText(node)) + "\n\n"
+		return "\n\n" + core.FencedCode("", htmlRawText(node)) + "\n\n"
 	case "a":
 		content := strings.TrimSpace(renderHTMLChildren(node, tableFormat))
 		href := htmlAttribute(node, "href")
@@ -195,7 +200,7 @@ func renderHTMLNode(node *nethtml.Node, tableFormat TableFormat) string {
 		if source == "" {
 			return ""
 		}
-		return markdownImage(htmlAttribute(node, "alt"), source)
+		return core.MarkdownImage(htmlAttribute(node, "alt"), source)
 	case "ul":
 		return renderHTMLList(node, false, tableFormat)
 	case "ol":
@@ -206,7 +211,7 @@ func renderHTMLNode(node *nethtml.Node, tableFormat TableFormat) string {
 		content := strings.TrimSpace(renderHTMLChildren(node, tableFormat))
 		return "\n\n> " + strings.ReplaceAll(content, "\n", "\n> ") + "\n\n"
 	case "table":
-		if tableFormat == TableFormatHTML || htmlTableHasSpans(node) {
+		if tableFormat == core.TableFormatHTML || htmlTableHasSpans(node) {
 			return "\n\n" + renderOriginalHTMLNode(node) + "\n\n"
 		}
 		return "\n\n" + renderHTMLTable(node, tableFormat) + "\n\n"
@@ -214,7 +219,7 @@ func renderHTMLNode(node *nethtml.Node, tableFormat TableFormat) string {
 	return renderHTMLChildren(node, tableFormat)
 }
 
-func renderHTMLChildren(node *nethtml.Node, tableFormat TableFormat) string {
+func renderHTMLChildren(node *nethtml.Node, tableFormat core.TableFormat) string {
 	var out strings.Builder
 	for child := node.FirstChild; child != nil; child = child.NextSibling {
 		out.WriteString(renderHTMLNode(child, tableFormat))
@@ -222,7 +227,7 @@ func renderHTMLChildren(node *nethtml.Node, tableFormat TableFormat) string {
 	return out.String()
 }
 
-func renderHTMLList(list *nethtml.Node, ordered bool, tableFormat TableFormat) string {
+func renderHTMLList(list *nethtml.Node, ordered bool, tableFormat core.TableFormat) string {
 	lines := make([]string, 0)
 	index := 1
 	for child := list.FirstChild; child != nil; child = child.NextSibling {
@@ -241,7 +246,7 @@ func renderHTMLList(list *nethtml.Node, ordered bool, tableFormat TableFormat) s
 	return "\n\n" + strings.Join(lines, "\n") + "\n\n"
 }
 
-func renderHTMLTable(table *nethtml.Node, tableFormat TableFormat) string {
+func renderHTMLTable(table *nethtml.Node, tableFormat core.TableFormat) string {
 	rows := make([][]string, 0)
 	var walk func(*nethtml.Node)
 	walk = func(node *nethtml.Node) {
@@ -265,7 +270,7 @@ func renderHTMLTable(table *nethtml.Node, tableFormat TableFormat) string {
 		}
 	}
 	walk(table)
-	return markdownTable(rows)
+	return core.MarkdownTable(rows)
 }
 
 func htmlTableHasSpans(table *nethtml.Node) bool {

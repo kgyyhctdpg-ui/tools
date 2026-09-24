@@ -4,10 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/md5"
-	"encoding/json"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -117,58 +114,10 @@ func TestAssetsFolderUsesInputFileNameMD5(t *testing.T) {
 	}
 }
 
-func TestRunUsesSelfHostedMinerU(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		switch {
-		case request.Method == http.MethodPost && request.URL.Path == "/tasks":
-			if request.FormValue("return_md") != "true" {
-				t.Fatalf("unexpected MinerU submission: path=%q return_md=%q", request.URL.Path, request.FormValue("return_md"))
-			}
-			_ = json.NewEncoder(writer).Encode(map[string]any{"task_id": "task-1", "status": "pending"})
-		case request.Method == http.MethodGet && request.URL.Path == "/tasks/task-1":
-			_ = json.NewEncoder(writer).Encode(map[string]any{"task_id": "task-1", "status": "completed"})
-		case request.Method == http.MethodGet && request.URL.Path == "/tasks/task-1/result":
-			_ = json.NewEncoder(writer).Encode(map[string]any{
-				"results": map[string]any{
-					"input": map[string]any{"md_content": "# Parsed by MinerU"},
-				},
-			})
-		default:
-			t.Fatalf("unexpected MinerU request: %s %s", request.Method, request.URL.Path)
-		}
-	}))
-	defer server.Close()
-
+func TestRunConvertsPDFLocally(t *testing.T) {
 	directory := t.TempDir()
 	input := filepath.Join(directory, "input.pdf")
-	output := filepath.Join(directory, "output.md")
-	if err := os.WriteFile(input, []byte("remote parser input"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	code := run(context.Background(), []string{
-		"-i", input,
-		"-o", output,
-		"--mineru-url", server.URL,
-		"--mineru-poll-interval", "1ms",
-	}, strings.NewReader(""), &stdout, &stderr)
-	if code != 0 {
-		t.Fatalf("unexpected exit code %d: %s", code, stderr.String())
-	}
-	data, err := os.ReadFile(output)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.TrimSpace(string(data)) != "# Parsed by MinerU" {
-		t.Fatalf("unexpected MinerU output: %q", data)
-	}
-}
-
-func TestRunFallsBackWithoutMinerUURLForPDF(t *testing.T) {
-	directory := t.TempDir()
-	input := filepath.Join(directory, "input.pdf")
-	if err := os.WriteFile(input, minimalTextPDF("CLI fallback PDF body"), 0o600); err != nil {
+	if err := os.WriteFile(input, minimalTextPDF("CLI local PDF body"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	var stdout bytes.Buffer
@@ -177,23 +126,103 @@ func TestRunFallsBackWithoutMinerUURLForPDF(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("unexpected exit code %d: %s", code, stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "warning:") || !strings.Contains(stderr.String(), "MinerU is not configured") {
-		t.Fatalf("expected fallback warning, stderr=%q", stderr.String())
+	if !strings.Contains(stdout.String(), "CLI local PDF body") {
+		t.Fatalf("local output did not include PDF text: %q", stdout.String())
 	}
-	if !strings.Contains(stdout.String(), "CLI fallback PDF body") {
-		t.Fatalf("fallback output did not include PDF text: %q", stdout.String())
+	if strings.Contains(stderr.String(), "warning:") {
+		t.Fatalf("a text PDF should not warn, stderr=%q", stderr.String())
 	}
 }
 
+func TestRunHonoursPDFPageRange(t *testing.T) {
+	directory := t.TempDir()
+	input := filepath.Join(directory, "input.pdf")
+	if err := os.WriteFile(input, multiPageTextPDF("first page body", "second page body"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run(context.Background(), []string{"-i", input, "--pdf-first-page", "2"}, strings.NewReader(""), &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("unexpected exit code %d: %s", code, stderr.String())
+	}
+	if strings.Contains(stdout.String(), "first page body") || !strings.Contains(stdout.String(), "second page body") {
+		t.Fatalf("page range was not honoured: %q", stdout.String())
+	}
+}
+
+func TestRunRejectsPDFPageRangePastTheEnd(t *testing.T) {
+	directory := t.TempDir()
+	input := filepath.Join(directory, "input.pdf")
+	if err := os.WriteFile(input, minimalTextPDF("only page"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run(context.Background(), []string{"-i", input, "--pdf-first-page", "5"}, strings.NewReader(""), &stdout, &stderr)
+	if code != 1 || !strings.Contains(stderr.String(), "past the last page") {
+		t.Fatalf("expected page range error, code=%d stderr=%q", code, stderr.String())
+	}
+}
+
+func TestRunUsesExplicitAssetsDirectory(t *testing.T) {
+	directory := t.TempDir()
+	input := filepath.Join(directory, "photo.png")
+	output := filepath.Join(directory, "report.md")
+	imageData := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 4, 5, 6}
+	if err := os.WriteFile(input, imageData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run(context.Background(), []string{
+		"-i", input, "-o", output,
+		"--assets-dir", "images",
+		"--assets-prefix", "assets",
+	}, strings.NewReader(""), &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("unexpected exit code %d: %s", code, stderr.String())
+	}
+	markdownData, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(markdownData), "assets/photo.png") {
+		t.Fatalf("expected the custom link prefix, got: %s", markdownData)
+	}
+	if _, err := os.Stat(filepath.Join(directory, "images", "photo.png")); err != nil {
+		t.Fatalf("image was not stored in the custom directory: %v", err)
+	}
+}
+
+// minimalTextPDF builds a one-page PDF whose single text run is text.
 func minimalTextPDF(text string) []byte {
-	stream := "BT\n/F1 18 Tf\n72 720 Td\n(" + escapePDFString(text) + ") Tj\nET\n"
+	return multiPageTextPDF(text)
+}
+
+// multiPageTextPDF builds a PDF with one text page per entry, which keeps the
+// page-range handling testable without shipping binary fixtures.
+func multiPageTextPDF(pages ...string) []byte {
+	if len(pages) == 0 {
+		pages = []string{""}
+	}
 	objects := []string{
 		"<< /Type /Catalog /Pages 2 0 R >>",
-		"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+		"",
 		"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
-		fmt.Sprintf("<< /Length %d >>\nstream\n%s\nendstream", len(stream), stream),
 	}
+	kids := make([]string, 0, len(pages))
+	for _, text := range pages {
+		pageObject := len(objects) + 1
+		contentObject := pageObject + 1
+		kids = append(kids, fmt.Sprintf("%d 0 R", pageObject))
+		objects = append(objects,
+			fmt.Sprintf("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents %d 0 R >>", contentObject),
+			contentStream(text),
+		)
+	}
+	objects[1] = fmt.Sprintf("<< /Type /Pages /Kids [%s] /Count %d >>", strings.Join(kids, " "), len(pages))
 
 	var out bytes.Buffer
 	out.WriteString("%PDF-1.4\n")
@@ -212,6 +241,11 @@ func minimalTextPDF(text string) []byte {
 	return out.Bytes()
 }
 
+func contentStream(text string) string {
+	stream := "BT\n/F1 18 Tf\n72 720 Td\n(" + escapePDFString(text) + ") Tj\nET\n"
+	return fmt.Sprintf("<< /Length %d >>\nstream\n%s\nendstream", len(stream), stream)
+}
+
 func escapePDFString(value string) string {
 	return strings.NewReplacer(
 		`\`, `\\`,
@@ -220,4 +254,62 @@ func escapePDFString(value string) string {
 		"\r", `\r`,
 		"\n", `\n`,
 	).Replace(value)
+}
+
+func TestParseMarkdownSize(t *testing.T) {
+	for _, testCase := range []struct {
+		value string
+		want  int64
+	}{
+		{"", 0},
+		{"1024", 1024},
+		{"512KB", 512 << 10},
+		{"512kb", 512 << 10},
+		{"128MB", 128 << 20},
+		{"1GB", 1 << 30},
+		{"1gb", 1 << 30},
+		{"2TB", 2 << 40},
+		{"2048B", 2048},
+		{"0", 0},
+	} {
+		got, err := parseMarkdownSize(testCase.value)
+		if err != nil || got != testCase.want {
+			t.Fatalf("parseMarkdownSize(%q) = %d, %v; want %d", testCase.value, got, err, testCase.want)
+		}
+	}
+	for _, bad := range []string{"abc", "-1", "10XB"} {
+		if _, err := parseMarkdownSize(bad); err == nil {
+			t.Fatalf("parseMarkdownSize(%q) should fail", bad)
+		}
+	}
+}
+
+func TestRunRejectsInvalidMaxInputSize(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if code := run(context.Background(), []string{"-i", "report.pdf", "-max-input-size", "huge"}, strings.NewReader(""), &stdout, &stderr); code != 2 {
+		t.Fatalf("expected exit code 2, got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "-max-input-size") {
+		t.Fatalf("unexpected stderr: %q", stderr.String())
+	}
+}
+
+func TestRunConvertsWithoutAnInputLimit(t *testing.T) {
+	directory := t.TempDir()
+	source := filepath.Join(directory, "vector.pdf")
+	if err := os.WriteFile(source, minimalTextPDF("Large enough input"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	output := filepath.Join(directory, "out.md")
+	var stdout, stderr bytes.Buffer
+	if code := run(context.Background(), []string{"-i", source, "-o", output}, strings.NewReader(""), &stdout, &stderr); code != 0 {
+		t.Fatalf("expected exit code 0, got %d: %s", code, stderr.String())
+	}
+	data, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "Large enough input") {
+		t.Fatalf("conversion lost the text: %s", data)
+	}
 }

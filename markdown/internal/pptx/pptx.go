@@ -1,19 +1,22 @@
-package markdown
+package pptx
 
 import (
 	"context"
 	"fmt"
+	"github.com/scoming-dev/tools/markdown/internal/core"
+	"github.com/scoming-dev/tools/markdown/internal/ooxml"
 	"html"
 	"strconv"
 	"strings"
 )
 
-func newPPTXConverter() Converter {
-	return newExtensionConverter(
+// NewConverter builds the PPTX converter.
+func NewConverter() core.Converter {
+	return core.NewExtensionConverter(
 		[]string{".pptx", ".pptm"},
 		[]string{"application/vnd.openxmlformats-officedocument.presentationml.presentation", "application/vnd.ms-powerpoint.presentation.macroenabled.12"},
-		func(ctx context.Context, data []byte, _ StreamInfo) (*Result, error) {
-			parts, err := officeParts(data, func(name string) bool {
+		func(ctx context.Context, data []byte, _ core.StreamInfo) (*core.Result, error) {
+			parts, err := core.OfficeParts(data, func(name string) bool {
 				return strings.HasPrefix(name, "ppt/slides/slide") && strings.HasSuffix(name, ".xml") || name == "docProps/core.xml"
 			})
 			if err != nil {
@@ -25,24 +28,24 @@ func newPPTXConverter() Converter {
 					names = append(names, name)
 				}
 			}
-			naturalXMLPartOrder(names)
+			core.NaturalXMLPartOrder(names)
 			blocks := make([]string, 0, len(names))
 			for index, name := range names {
-				root, err := parseXML(parts[name])
+				root, err := core.ParseXML(parts[name])
 				if err != nil {
 					return nil, fmt.Errorf("markdown: parse slide %d: %w", index+1, err)
 				}
-				config, _ := ctx.Value(conversionConfigKey{}).(conversionConfig)
-				content := renderPPTXNode(root, config.tableFormat)
+				tableFormat := core.TableFormatFromContext(ctx)
+				content := renderPPTXNode(root, tableFormat)
 				blocks = append(blocks, fmt.Sprintf("## Slide %d\n\n%s", index+1, content))
 			}
-			title, metadata := coreProperties(parts["docProps/core.xml"])
-			return &Result{Title: title, Markdown: joinMarkdownBlocks(blocks), Metadata: metadata}, nil
+			title, metadata := core.CoreProperties(parts["docProps/core.xml"])
+			return &core.Result{Title: title, Markdown: core.JoinBlocks(blocks), Metadata: metadata}, nil
 		},
 	)
 }
 
-func renderPPTXNode(node *xmlNode, tableFormat TableFormat) string {
+func renderPPTXNode(node *core.XMLNode, tableFormat core.TableFormat) string {
 	if node == nil {
 		return ""
 	}
@@ -58,23 +61,23 @@ func renderPPTXNode(node *xmlNode, tableFormat TableFormat) string {
 			blocks = append(blocks, value)
 		}
 	}
-	return joinMarkdownBlocks(blocks)
+	return core.JoinBlocks(blocks)
 }
 
-func renderPPTXTable(table *xmlNode, tableFormat TableFormat) string {
-	htmlRows := make([]docxTableRow, 0)
+func renderPPTXTable(table *core.XMLNode, tableFormat core.TableFormat) string {
+	htmlRows := make([]ooxml.TableRow, 0)
 	plainRows := make([][]string, 0)
 	hasSpans := false
-	for _, row := range table.children("tr") {
-		htmlRow := docxTableRow{}
+	for _, row := range table.ChildrenNamed("tr") {
+		htmlRow := ooxml.TableRow{}
 		plainRow := make([]string, 0)
-		for _, cell := range row.children("tc") {
-			if drawingMLOnOff(cell.attr("hMerge")) || drawingMLOnOff(cell.attr("vMerge")) {
+		for _, cell := range row.ChildrenNamed("tc") {
+			if drawingMLOnOff(cell.Attr("hMerge")) || drawingMLOnOff(cell.Attr("vMerge")) {
 				hasSpans = true
 				continue
 			}
-			colSpan := positiveInteger(cell.attr("gridSpan"))
-			rowSpan := positiveInteger(cell.attr("rowSpan"))
+			colSpan := positiveInteger(cell.Attr("gridSpan"))
+			rowSpan := positiveInteger(cell.Attr("rowSpan"))
 			if colSpan == 0 {
 				colSpan = 1
 			}
@@ -82,10 +85,10 @@ func renderPPTXTable(table *xmlNode, tableFormat TableFormat) string {
 				rowSpan = 1
 			}
 			value := pptxText(cell)
-			htmlRow.cells = append(htmlRow.cells, &docxTableCell{
-				content: html.EscapeString(value),
-				colSpan: colSpan,
-				rowSpan: rowSpan,
+			htmlRow.Cells = append(htmlRow.Cells, ooxml.TableCell{
+				Content: html.EscapeString(value),
+				ColSpan: colSpan,
+				RowSpan: rowSpan,
 			})
 			plainRow = append(plainRow, value)
 			if colSpan > 1 || rowSpan > 1 {
@@ -95,10 +98,10 @@ func renderPPTXTable(table *xmlNode, tableFormat TableFormat) string {
 		htmlRows = append(htmlRows, htmlRow)
 		plainRows = append(plainRows, plainRow)
 	}
-	if tableFormat != TableFormatHTML && !hasSpans {
-		return markdownTable(plainRows)
+	if tableFormat != core.TableFormatHTML && !hasSpans {
+		return core.MarkdownTable(plainRows)
 	}
-	return renderDOCXHTMLTable(htmlRows)
+	return ooxml.RenderHTMLTable(htmlRows)
 }
 
 func drawingMLOnOff(value string) bool {
@@ -118,9 +121,9 @@ func positiveInteger(value string) int {
 	return result
 }
 
-func pptxText(node *xmlNode) string {
+func pptxText(node *core.XMLNode) string {
 	texts := make([]string, 0)
-	for _, text := range node.descendants("t") {
+	for _, text := range node.Descendants("t") {
 		texts = append(texts, text.Text)
 	}
 	return strings.TrimSpace(strings.Join(texts, ""))

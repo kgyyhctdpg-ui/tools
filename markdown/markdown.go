@@ -1,10 +1,19 @@
 // Package markdown converts common document formats to Markdown.
+//
+// PDF conversion is fully local: it never calls a remote service and never
+// performs OCR. Pages that carry no text layer keep their embedded images, and
+// pages that carry neither text nor images are rasterized as whole-page
+// pictures; both are written through the configured ImageHandler, so
+// WithAssetsDirectory turns them into files that Markdown links to.
+//
+// The format implementations live in subpackages under internal/. This package
+// owns the public API: the engine, the option set and the built-in converter
+// registration.
 package markdown
 
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -17,98 +26,96 @@ import (
 	"strings"
 	"sync"
 	"unicode/utf8"
+
+	"github.com/scoming-dev/tools/markdown/internal/archive"
+	"github.com/scoming-dev/tools/markdown/internal/core"
+	"github.com/scoming-dev/tools/markdown/internal/docx"
+	"github.com/scoming-dev/tools/markdown/internal/email"
+	"github.com/scoming-dev/tools/markdown/internal/imagefile"
+	"github.com/scoming-dev/tools/markdown/internal/pdf"
+	"github.com/scoming-dev/tools/markdown/internal/pptx"
+	"github.com/scoming-dev/tools/markdown/internal/text"
+	"github.com/scoming-dev/tools/markdown/internal/xlsx"
 )
 
 const (
-	defaultMaxInputSize       = int64(128 << 20)
+	// defaultMaxInputSize is unlimited: the converters load the whole document
+	// anyway, so a size cap only turns a large but valid file into an error.
+	// Applications that accept untrusted uploads should set their own limit
+	// with WithMaxInputSize.
+	defaultMaxInputSize       = int64(0)
 	defaultMaxArchiveFileSize = int64(32 << 20)
 	defaultMaxArchiveFiles    = 512
 	defaultMaxArchiveDepth    = 4
 )
 
+// Errors reported by the engine and its converters.
 var (
-	ErrUnsupportedFormat = errors.New("markdown: unsupported format")
-	ErrInputTooLarge     = errors.New("markdown: input is too large")
-	ErrArchiveLimit      = errors.New("markdown: archive limit exceeded")
+	ErrUnsupportedFormat = core.ErrUnsupportedFormat
+	ErrInputTooLarge     = core.ErrInputTooLarge
+	ErrArchiveLimit      = core.ErrArchiveLimit
 )
 
-// StreamInfo describes an input stream.
-type StreamInfo struct {
-	Name      string
-	Extension string
-	MIMEType  string
-	URL       string
-}
-
-// Result contains converted Markdown and source metadata.
-type Result struct {
-	Title       string
-	Markdown    string
-	TextContent string
-	Metadata    map[string]string
-	Warnings    []string
-}
-
-func (result *Result) String() string {
-	if result == nil {
-		return ""
-	}
-	if result.Markdown != "" {
-		return result.Markdown
-	}
-	return result.TextContent
-}
-
-// TableFormat controls table output.
-type TableFormat string
-
+// Warnings reported through Result.Warnings.
 const (
-	TableFormatMarkdown TableFormat = "markdown"
-	TableFormatHTML     TableFormat = "html"
+	PDFNoOCRWarning      = pdf.PDFNoOCRWarning
+	PDFPageRenderWarning = pdf.PDFPageRenderWarning
 )
 
-// Image is an image extracted from a source document.
-type Image struct {
-	Name     string
-	MIMEType string
-	AltText  string
-	Data     []byte
-}
+// Public model aliases. They are the same types the internal converters use, so
+// custom converters interoperate with the built-ins.
+type (
+	// StreamInfo describes an input stream.
+	StreamInfo = core.StreamInfo
+	// Result contains converted Markdown and source metadata.
+	Result = core.Result
+	// TableFormat controls table output.
+	TableFormat = core.TableFormat
+	// Image is an image extracted from a source document.
+	Image = core.Image
+	// ImageHandler stores or transforms an extracted image and returns the URL
+	// to place in Markdown.
+	ImageHandler = core.ImageHandler
+	// Converter converts one or more formats.
+	Converter = core.Converter
+	// ExtensionProvider lets a converter advertise the extensions it handles.
+	ExtensionProvider = core.ExtensionProvider
+	// PDFOptions configures the built-in local PDF converter.
+	PDFOptions = core.PDFOptions
+	// PDFImageFormat selects the raster format for PDF pictures, including the
+	// images embedded in a page. Defaults to JPEG.
+	PDFImageFormat = core.PDFImageFormat
+)
 
-// ImageHandler stores or transforms an extracted image and returns the URL to
-// place in Markdown. The default handler returns a self-contained data URI.
-type ImageHandler func(ctx context.Context, image Image) (string, error)
+// Table rendering formats.
+const (
+	TableFormatMarkdown = core.TableFormatMarkdown
+	TableFormatHTML     = core.TableFormatHTML
+)
 
-// PDFHandler converts every PDF through MinerU. imageHandler must be used for
-// images returned by MinerU so WithAssetsDirectory keeps working.
-type PDFHandler func(ctx context.Context, data []byte, info StreamInfo, imageHandler ImageHandler) (*Result, error)
+// PDF page raster formats.
+const (
+	PDFImageFormatPNG  = core.PDFImageFormatPNG
+	PDFImageFormatJPEG = core.PDFImageFormatJPEG
+)
 
-// Converter converts one or more formats.
-type Converter interface {
-	Supports(info StreamInfo) bool
-	Convert(ctx context.Context, data []byte, info StreamInfo) (*Result, error)
-}
+// DataURIImageHandler embeds an image directly in Markdown.
+var DataURIImageHandler = core.DataURIImageHandler
 
-type ExtensionProvider interface {
-	Extensions() []string
-}
-
+// Option configures an engine.
 type Option func(*MarkItDown)
 
+// MarkItDown converts documents to Markdown.
 type MarkItDown struct {
 	mu sync.RWMutex
+
+	// Settings is the live configuration the built-in converters read.
+	core.Settings
 
 	converters       []Converter
 	registeredGroups builtinGroup
 	httpClient       *http.Client
-	imageHandler     ImageHandler
-	pdfHandler       PDFHandler
-	tableFormat      TableFormat
-
-	maxInputSize       int64
-	maxArchiveFileSize int64
-	maxArchiveFiles    int
-	maxArchiveDepth    int
+	maxInputSize     int64
 }
 
 // New creates an engine with all built-in converters. This preserves the
@@ -136,14 +143,20 @@ func NewWithBuiltins(options ...Option) *MarkItDown {
 
 func newMarkItDown(registerBuiltins bool, options ...Option) *MarkItDown {
 	engine := &MarkItDown{
-		httpClient:         http.DefaultClient,
-		imageHandler:       DataURIImageHandler,
-		tableFormat:        TableFormatHTML,
-		maxInputSize:       defaultMaxInputSize,
-		maxArchiveFileSize: defaultMaxArchiveFileSize,
-		maxArchiveFiles:    defaultMaxArchiveFiles,
-		maxArchiveDepth:    defaultMaxArchiveDepth,
+		Settings: core.Settings{
+			ImageHandler:       DataURIImageHandler,
+			TableFormat:        TableFormatHTML,
+			MaxArchiveFileSize: defaultMaxArchiveFileSize,
+			MaxArchiveFiles:    defaultMaxArchiveFiles,
+			MaxArchiveDepth:    defaultMaxArchiveDepth,
+			PDF:                core.NormalizePDFOptions(PDFOptions{}),
+		},
+		httpClient:   http.DefaultClient,
+		maxInputSize: defaultMaxInputSize,
 	}
+	// Converters recurse back through the engine for archive entries and email
+	// attachments.
+	engine.Settings.Convert = engine.convertData
 	if registerBuiltins {
 		engine.RegisterBuiltins()
 	}
@@ -166,25 +179,27 @@ func WithHTTPClient(client *http.Client) Option {
 func WithImageHandler(handler ImageHandler) Option {
 	return func(engine *MarkItDown) {
 		if handler != nil {
-			engine.imageHandler = handler
+			engine.Settings.ImageHandler = handler
 		}
 	}
 }
 
-// WithPDFHandler configures the MinerU conversion used for every PDF.
-func WithPDFHandler(handler PDFHandler) Option {
-	return func(engine *MarkItDown) {
-		engine.pdfHandler = handler
-	}
-}
-
+// WithTableFormat selects the table rendering used by the built-in converters.
 func WithTableFormat(format TableFormat) Option {
 	return func(engine *MarkItDown) {
 		if format == TableFormatHTML {
-			engine.tableFormat = TableFormatHTML
+			engine.Settings.TableFormat = TableFormatHTML
 		} else {
-			engine.tableFormat = TableFormatMarkdown
+			engine.Settings.TableFormat = TableFormatMarkdown
 		}
+	}
+}
+
+// WithPDFOptions configures the built-in local PDF converter. The zero value
+// keeps every default.
+func WithPDFOptions(options PDFOptions) Option {
+	return func(engine *MarkItDown) {
+		engine.Settings.PDF = core.NormalizePDFOptions(options)
 	}
 }
 
@@ -195,13 +210,13 @@ func WithMaxInputSize(size int64) Option {
 func WithArchiveLimits(files int, fileSize int64, depth int) Option {
 	return func(engine *MarkItDown) {
 		if files > 0 {
-			engine.maxArchiveFiles = files
+			engine.Settings.MaxArchiveFiles = files
 		}
 		if fileSize > 0 {
-			engine.maxArchiveFileSize = fileSize
+			engine.Settings.MaxArchiveFileSize = fileSize
 		}
 		if depth > 0 {
-			engine.maxArchiveDepth = depth
+			engine.Settings.MaxArchiveDepth = depth
 		}
 	}
 }
@@ -269,7 +284,7 @@ func (engine *MarkItDown) ConvertReader(ctx context.Context, reader io.Reader, i
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	data, err := readLimited(reader, engine.maxInputSize)
+	data, err := core.ReadLimited(reader, engine.maxInputSize)
 	if err != nil {
 		return nil, err
 	}
@@ -284,15 +299,6 @@ func ConvertReader(reader io.Reader, info StreamInfo) (*Result, error) {
 	return New().ConvertReader(context.Background(), reader, info)
 }
 
-// DataURIImageHandler embeds an image directly in Markdown.
-func DataURIImageHandler(_ context.Context, image Image) (string, error) {
-	mimeType := image.MIMEType
-	if mimeType == "" {
-		mimeType = "application/octet-stream"
-	}
-	return "data:" + mimeType + ";base64," + base64.StdEncoding.EncodeToString(image.Data), nil
-}
-
 func (engine *MarkItDown) convertFile(ctx context.Context, path string) (*Result, error) {
 	info, err := os.Stat(path)
 	if err != nil {
@@ -302,7 +308,7 @@ func (engine *MarkItDown) convertFile(ctx context.Context, path string) (*Result
 		return nil, fmt.Errorf("markdown: %q is a directory", path)
 	}
 	if engine.maxInputSize > 0 && info.Size() > engine.maxInputSize {
-		return nil, fmt.Errorf("%w: %d bytes", ErrInputTooLarge, info.Size())
+		return nil, fmt.Errorf("%w: %d bytes exceeds the %d byte limit set by WithMaxInputSize", ErrInputTooLarge, info.Size(), engine.maxInputSize)
 	}
 	file, err := os.Open(path)
 	if err != nil {
@@ -334,14 +340,11 @@ func (engine *MarkItDown) convertURL(ctx context.Context, source string, parsed 
 	return engine.ConvertReader(ctx, response.Body, StreamInfo{Name: name, MIMEType: response.Header.Get("Content-Type"), URL: source})
 }
 
-type conversionConfigKey struct{}
-type conversionConfig struct{ tableFormat TableFormat }
-
 func (engine *MarkItDown) convertData(ctx context.Context, data []byte, info StreamInfo) (*Result, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	ctx = context.WithValue(ctx, conversionConfigKey{}, conversionConfig{tableFormat: engine.tableFormat})
+	ctx = core.WithTableFormat(ctx, engine.Settings.TableFormatValue())
 	engine.mu.RLock()
 	converters := append([]Converter(nil), engine.converters...)
 	engine.mu.RUnlock()
@@ -394,16 +397,19 @@ func normalizeExtension(extension string) string {
 	return extension
 }
 
-func readLimited(reader io.Reader, limit int64) ([]byte, error) {
-	if limit <= 0 {
-		return io.ReadAll(reader)
-	}
-	data, err := io.ReadAll(io.LimitReader(reader, limit+1))
-	if err != nil {
-		return nil, err
-	}
-	if int64(len(data)) > limit {
-		return nil, fmt.Errorf("%w: limit is %d bytes", ErrInputTooLarge, limit)
-	}
-	return data, nil
-}
+// The built-in converter constructors, kept package-local so the registration
+// table below reads as the converter catalog.
+var (
+	newTextConverter       = text.NewTextConverter
+	newHTMLConverter       = text.NewHTMLConverter
+	newCSVConverter        = text.NewCSVConverter
+	newStructuredConverter = text.NewStructuredTextConverter
+	newDOCXConverter       = docx.NewConverter
+	newXLSXConverter       = xlsx.NewConverter
+	newPPTXConverter       = pptx.NewConverter
+	newEPUBConverter       = archive.NewEPUBConverter
+	newEMLConverter        = email.NewConverter
+	newZIPConverter        = archive.NewZIPConverter
+	newImageConverter      = imagefile.NewConverter
+	newPDFConverter        = pdf.NewConverter
+)

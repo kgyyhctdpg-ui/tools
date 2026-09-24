@@ -1,32 +1,33 @@
-package markdown
+package archive
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/scoming-dev/tools/markdown/internal/core"
+	"github.com/scoming-dev/tools/markdown/internal/text"
 	"net/url"
 	"path"
 	"sort"
 	"strings"
 )
 
-type archiveDepthKey struct{}
-
-func newZIPConverter(engine *MarkItDown) Converter {
-	return newExtensionConverter(
+// NewZIPConverter builds the ZIP archive converter.
+func NewZIPConverter(settings *core.Settings) core.Converter {
+	return core.NewExtensionConverter(
 		[]string{".zip"},
 		[]string{"application/zip"},
-		func(ctx context.Context, data []byte, _ StreamInfo) (*Result, error) {
-			depth, _ := ctx.Value(archiveDepthKey{}).(int)
-			if depth >= engine.maxArchiveDepth {
-				return nil, fmt.Errorf("%w: maximum nesting depth is %d", ErrArchiveLimit, engine.maxArchiveDepth)
+		func(ctx context.Context, data []byte, _ core.StreamInfo) (*core.Result, error) {
+			depth := core.ArchiveDepthFromContext(ctx)
+			if depth >= settings.MaxArchiveDepth {
+				return nil, fmt.Errorf("%w: maximum nesting depth is %d", core.ErrArchiveLimit, settings.MaxArchiveDepth)
 			}
-			reader, err := openZip(data)
+			reader, err := core.OpenZip(data)
 			if err != nil {
 				return nil, err
 			}
-			if len(reader.File) > engine.maxArchiveFiles {
-				return nil, fmt.Errorf("%w: archive contains %d files", ErrArchiveLimit, len(reader.File))
+			if len(reader.File) > settings.MaxArchiveFiles {
+				return nil, fmt.Errorf("%w: archive contains %d files", core.ErrArchiveLimit, len(reader.File))
 			}
 			names := make([]string, 0, len(reader.File))
 			entries := make(map[string]int)
@@ -40,14 +41,14 @@ func newZIPConverter(engine *MarkItDown) Converter {
 			}
 			sort.Strings(names)
 			blocks := make([]string, 0, len(names))
-			childContext := context.WithValue(ctx, archiveDepthKey{}, depth+1)
+			childContext := core.WithArchiveDepth(ctx, depth+1)
 			for _, name := range names {
-				content, err := readZipEntry(reader.File[entries[name]], engine.maxArchiveFileSize)
+				content, err := core.ReadZipEntry(reader.File[entries[name]], settings.MaxArchiveFileSize)
 				if err != nil {
 					return nil, err
 				}
-				result, err := engine.convertData(childContext, content, StreamInfo{Name: name})
-				if errors.Is(err, ErrUnsupportedFormat) {
+				result, err := settings.Convert(childContext, content, core.StreamInfo{Name: name})
+				if errors.Is(err, core.ErrUnsupportedFormat) {
 					continue
 				}
 				if err != nil {
@@ -57,17 +58,18 @@ func newZIPConverter(engine *MarkItDown) Converter {
 					blocks = append(blocks, "## "+name+"\n\n"+result.String())
 				}
 			}
-			return &Result{Markdown: joinMarkdownBlocks(blocks)}, nil
+			return &core.Result{Markdown: core.JoinBlocks(blocks)}, nil
 		},
 	)
 }
 
-func newEPUBConverter() Converter {
-	return newExtensionConverter(
+// NewEPUBConverter builds the EPUB converter.
+func NewEPUBConverter() core.Converter {
+	return core.NewExtensionConverter(
 		[]string{".epub"},
 		[]string{"application/epub+zip"},
-		func(ctx context.Context, data []byte, _ StreamInfo) (*Result, error) {
-			reader, err := openZip(data)
+		func(ctx context.Context, data []byte, _ core.StreamInfo) (*core.Result, error) {
+			reader, err := core.OpenZip(data)
 			if err != nil {
 				return nil, err
 			}
@@ -76,7 +78,7 @@ func newEPUBConverter() Converter {
 				if file.FileInfo().IsDir() {
 					continue
 				}
-				content, err := readZipEntry(file, 64<<20)
+				content, err := core.ReadZipEntry(file, 64<<20)
 				if err != nil {
 					return nil, err
 				}
@@ -87,18 +89,18 @@ func newEPUBConverter() Converter {
 			if err != nil {
 				return nil, err
 			}
-			packageRoot, err := parseXML(parts[packagePath])
+			packageRoot, err := core.ParseXML(parts[packagePath])
 			if err != nil {
 				return nil, fmt.Errorf("markdown: parse epub package: %w", err)
 			}
 			manifest := make(map[string]string)
-			for _, item := range packageRoot.descendants("item") {
-				href, _ := url.PathUnescape(item.attr("href"))
-				manifest[item.attr("id")] = path.Clean(path.Join(path.Dir(packagePath), href))
+			for _, item := range packageRoot.Descendants("item") {
+				href, _ := url.PathUnescape(item.Attr("href"))
+				manifest[item.Attr("id")] = path.Clean(path.Join(path.Dir(packagePath), href))
 			}
 			spine := make([]string, 0)
-			for _, item := range packageRoot.descendants("itemref") {
-				if name := manifest[item.attr("idref")]; name != "" {
+			for _, item := range packageRoot.Descendants("itemref") {
+				if name := manifest[item.Attr("idref")]; name != "" {
 					spine = append(spine, name)
 				}
 			}
@@ -110,24 +112,24 @@ func newEPUBConverter() Converter {
 				}
 				sort.Strings(spine)
 			}
-			htmlConverter := newHTMLConverter()
+			htmlConverter := text.NewHTMLConverter()
 			blocks := make([]string, 0, len(spine))
 			for _, name := range spine {
 				content, ok := parts[name]
 				if !ok {
 					continue
 				}
-				result, err := htmlConverter.Convert(ctx, content, StreamInfo{Name: name, Extension: path.Ext(name), MIMEType: "application/xhtml+xml"})
+				result, err := htmlConverter.Convert(ctx, content, core.StreamInfo{Name: name, Extension: path.Ext(name), MIMEType: "application/xhtml+xml"})
 				if err != nil {
 					return nil, fmt.Errorf("markdown: convert epub chapter %q: %w", name, err)
 				}
 				blocks = append(blocks, result.String())
 			}
 			title := ""
-			if node := packageRoot.first("title"); node != nil {
-				title = strings.TrimSpace(node.textContent())
+			if node := packageRoot.First("title"); node != nil {
+				title = strings.TrimSpace(node.TextContent())
 			}
-			return &Result{Title: title, Markdown: joinMarkdownBlocks(blocks)}, nil
+			return &core.Result{Title: title, Markdown: core.JoinBlocks(blocks)}, nil
 		},
 	)
 }
@@ -136,13 +138,13 @@ func epubPackagePath(containerXML []byte) (string, error) {
 	if len(containerXML) == 0 {
 		return "", fmt.Errorf("markdown: epub has no META-INF/container.xml")
 	}
-	root, err := parseXML(containerXML)
+	root, err := core.ParseXML(containerXML)
 	if err != nil {
 		return "", fmt.Errorf("markdown: parse epub container: %w", err)
 	}
-	rootFile := root.first("rootfile")
-	if rootFile == nil || rootFile.attr("full-path") == "" {
+	rootFile := root.First("rootfile")
+	if rootFile == nil || rootFile.Attr("full-path") == "" {
 		return "", fmt.Errorf("markdown: epub package path is missing")
 	}
-	return path.Clean(strings.TrimPrefix(rootFile.attr("full-path"), "/")), nil
+	return path.Clean(strings.TrimPrefix(rootFile.Attr("full-path"), "/")), nil
 }

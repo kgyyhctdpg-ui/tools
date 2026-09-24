@@ -1,11 +1,11 @@
-package markdown
+package core
 
 import (
 	"html"
 	"strings"
 )
 
-func joinMarkdownBlocks(blocks []string) string {
+func JoinBlocks(blocks []string) string {
 	filtered := make([]string, 0, len(blocks))
 	for _, block := range blocks {
 		block = strings.TrimSpace(block)
@@ -16,7 +16,7 @@ func joinMarkdownBlocks(blocks []string) string {
 	return strings.Join(filtered, "\n\n")
 }
 
-func markdownTable(rows [][]string) string {
+func MarkdownTable(rows [][]string) string {
 	if len(rows) == 0 {
 		return ""
 	}
@@ -36,7 +36,7 @@ func markdownTable(rows [][]string) string {
 		for column := 0; column < columns; column++ {
 			value := ""
 			if column < len(row) {
-				value = markdownTableCell(row[column])
+				value = MarkdownTableCell(row[column])
 			}
 			out.WriteString(" ")
 			out.WriteString(value)
@@ -57,7 +57,7 @@ func markdownTable(rows [][]string) string {
 	return strings.TrimSpace(out.String())
 }
 
-func htmlTable(rows [][]string) string {
+func HTMLTable(rows [][]string) string {
 	if len(rows) == 0 {
 		return ""
 	}
@@ -99,7 +99,7 @@ func htmlTable(rows [][]string) string {
 	return out.String()
 }
 
-func markdownTableCell(value string) string {
+func MarkdownTableCell(value string) string {
 	value = strings.ReplaceAll(value, "\r\n", "\n")
 	value = strings.ReplaceAll(value, "\r", "\n")
 	value = strings.ReplaceAll(value, "\n", "<br>")
@@ -107,11 +107,11 @@ func markdownTableCell(value string) string {
 	return strings.TrimSpace(value)
 }
 
-func htmlEscapeText(value string) string {
+func HTMLEscapeText(value string) string {
 	return html.EscapeString(value)
 }
 
-func markdownImage(altText, imageURL string) string {
+func MarkdownImage(altText, imageURL string) string {
 	altText = strings.ReplaceAll(altText, "\\", "\\\\")
 	altText = strings.ReplaceAll(altText, "]", "\\]")
 	if strings.ContainsAny(imageURL, " ()") {
@@ -120,7 +120,7 @@ func markdownImage(altText, imageURL string) string {
 	return "![" + altText + "](" + imageURL + ")"
 }
 
-func fencedCode(language, content string) string {
+func FencedCode(language, content string) string {
 	fence := "```"
 	for strings.Contains(content, fence) {
 		fence += "`"
