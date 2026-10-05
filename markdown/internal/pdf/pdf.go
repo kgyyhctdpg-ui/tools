@@ -20,8 +20,10 @@ import (
 const PDFNoOCRWarning = "markdown: PDF pages without a text layer are stored as images and linked from the Markdown; this converter does not perform OCR."
 
 // PDFPageRenderWarning is reported when pages had to be rasterized because they
-// carried neither extractable text nor embedded images.
-const PDFPageRenderWarning = "markdown: %d PDF page(s) carried no extractable text or images and were rendered as pictures."
+// carried neither extractable text nor a content-sized embedded image — either no
+// images at all, or only images too small to be the page's content (stamps, logos,
+// header marks).
+const PDFPageRenderWarning = "markdown: %d PDF page(s) carried no extractable text and no content-sized image and were rendered as pictures."
 
 // NewConverter builds the local PDF converter.
 func NewConverter(settings *core.Settings) core.Converter {
@@ -41,10 +43,70 @@ type pdfPageStats struct {
 	imageCount int
 }
 
+// pdfImageOnlyPageCoverageThreshold bounds how much of a page may be covered by
+// placed images before those images are treated as the page's content.
+//
+// A page without a text layer whose images cover only a small part of it does not
+// carry its content in those images: the content is vector artwork, which neither
+// text extraction nor image extraction can capture. Keeping the pictures there
+// silently drops the whole page.
+//
+// Calibrated against real documents:
+//   - stamped drawing pages: 0.026 (590 of 592 pages of one drawing set)
+//   - the largest picture on a drawing page: 0.549
+//   - a full-page scan: 1.0
+//
+// 0.75 therefore separates the two cases with ample margin, and does not mistake a
+// scan for a stamped page.
+const pdfImageOnlyPageCoverageThreshold = 0.75
+
+// shouldRasterizeInsteadOfImages reports whether a page that carries images but no
+// text layer should be rasterized as a whole instead of keeping its pictures.
+//
+// Pages without a text layer whose only images are small (stamps, logos, header
+// marks) are not carrying their content in those images: the content is vector
+// artwork, which appears in neither the extracted text nor any embedded image.
+// Keeping the pictures there loses the entire page, and reports no warning.
+//
+// The test compares the total placed-image area against the page area rather than
+// counting images, so a scan assembled from several tiles still counts as content.
+func shouldRasterizeInsteadOfImages(document *pdfDocument, page int, lines []pdfTextLine, images []pdfPlacedImage) bool {
+	for _, line := range lines {
+		if line.Text() != "" {
+			return false // the page has a text layer, so this is not the case
+		}
+	}
+	if len(images) == 0 {
+		return false // no images at all: leave it to the existing empty-page fallback
+	}
+	width, height, err := document.PageSize(page)
+	if err != nil {
+		return false // without page dimensions, keep the previous behaviour
+	}
+	return imagesCoverLessThanShareOfPage(images, width, height, pdfImageOnlyPageCoverageThreshold)
+}
+
+// imagesCoverLessThanShareOfPage reports whether the placed images' areas sum to
+// less than share of the page area. Pure arithmetic, so the threshold decision is
+// testable without a live PDF engine. Non-positive page dimensions report false,
+// which leaves the caller on its previous behaviour.
+func imagesCoverLessThanShareOfPage(images []pdfPlacedImage, pageWidth, pageHeight, share float64) bool {
+	if pageWidth <= 0 || pageHeight <= 0 {
+		return false
+	}
+	var covered float64
+	for _, image := range images {
+		if w, h := image.Right-image.Left, image.Top-image.Bottom; w > 0 && h > 0 {
+			covered += w * h
+		}
+	}
+	return covered/(pageWidth*pageHeight) < share
+}
+
 // convertPDF converts every page locally with MuPDF (through go-fitz). No OCR
 // and no remote service are involved: text pages are rebuilt from the engine's
-// positioned text runs, image-only pages keep their pictures, and pages that
-// carry neither are rasterized.
+// positioned text runs, pages whose pictures are the content keep their pictures,
+// and pages that carry neither text nor content-sized pictures are rasterized.
 func convertPDF(ctx context.Context, data []byte, settings *core.Settings) (*core.Result, error) {
 	document, err := openPDFDocument(data)
 	if err != nil {
@@ -236,7 +298,9 @@ func convertPDFPagesParallel(
 }
 
 // convertPDFPage converts a single page, falling back to a whole-page picture
-// when the page has no text and no image to keep.
+// when the page contributes nothing to keep — either because it has neither text
+// nor images, or because its only images are too small to be the page's content
+// (see shouldRasterizeInsteadOfImages).
 func convertPDFPage(
 	ctx context.Context,
 	document *pdfDocument,
@@ -257,6 +321,22 @@ func convertPDFPage(
 	if err != nil {
 		return "", stats, err
 	}
+
+	// 无文字层的页面上若只贴了一小块图（印章、页眉标识、logo），那多半不是页面
+	// 正文；真正的正文是矢量内容（图纸线条、图表），它既不会被文字提取捕获，也不会
+	// 出现在任何一张嵌入图里。此时「保留图片」等于把整页正文丢掉，因此改走整页光栅。
+	// 判定依据与阈值标定见 shouldRasterizeInsteadOfImages。
+	if shouldRasterizeInsteadOfImages(document, page, lines, images) &&
+		!options.DisablePageRenderFallback &&
+		!(options.MaxRenderedPages > 0 && renderedSoFar >= options.MaxRenderedPages) {
+		rendered, err := renderPDFPageImage(ctx, document, page, imageHandler, options)
+		if err != nil {
+			return "", stats, err
+		}
+		stats.rendered = true
+		return rendered, stats, nil
+	}
+
 	content, stats, err := renderPDFItems(ctx, document.RenderImageRegion, page, lines, images, options, tableFormat, imageHandler, usedImages)
 	if err != nil {
 		return "", stats, err
